@@ -1,6 +1,7 @@
 import socket
 import struct
 import logging
+import time
 
 class MAMEInterface:
     def __init__(self, host='127.0.0.1', port=1942):
@@ -51,6 +52,25 @@ class MAMEInterface:
         pixel_data = self.receive_exact(bytes_len) 
         return pixel_data
 
+    def send_action(self, action):
+        # Map action to MAME input commands
+        # This is an example mapping for Joust
+        actions = [
+            "P1_LEFT",
+            "P1_RIGHT",
+            "P1_BUTTON1",
+            "P1_LEFT P1_BUTTON1",
+            "P1_RIGHT P1_BUTTON1",
+            ""  # No-op
+        ]
+        command = f"INPUT {actions[action]}"
+        self.send_command(command)
+
+    def reset_game(self):
+        self.send_command("SOFT_RESET")
+        # Wait for the game to fully reset
+        time.sleep(2)
+
     def close(self):
         if self.sock:
             self.sock.close()
@@ -69,11 +89,19 @@ if __name__ == "__main__":
         print(f"Stepped to frame: {frame_num}")
 
         # Example of repeated pixel fetching
-        while True: 
+        for _ in range(5):  # Reduced to 5 iterations for brevity
             pixels = mame.get_pixels(bytes_len)
             print(f"Received pixel data of size: {len(pixels)} bytes")
             frame_num = mame.step_frame()
             print(f"Stepped to frame: {frame_num}")
+
+        # Example of sending an action
+        mame.send_action(0)  # Send P1_LEFT action
+        print("Sent P1_LEFT action")
+
+        # Example of resetting the game
+        mame.reset_game()
+        print("Reset the game")
 
     finally:
         mame.close()
