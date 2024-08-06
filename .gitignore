@@ -1,0 +1,9 @@
+study/
+mame/
+__pycache__/
+venv/
+.vscode/
+.DS_Store
+*.py[cod]
+*.log
+*.tmp
