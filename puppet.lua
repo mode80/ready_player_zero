@@ -1,68 +1,45 @@
 emu.pause() -- Pause the game while we wait for a client  
+manager.machine.video.throttled = false -- Disable frame limiting
 
 local sock = emu.file("rwc") 
 sock:open("socket.127.0.0.1:1942")
 emu.print_info("Listening on port 1942")
 screen = manager.machine.screens[":screen"]
 
-function send_int32(value)
-    sock:write(string.pack(">I4", value))
-end
+function handle_command(command)
+    if command == "FRAME_NUMBER" then
+        sock:write(string.pack(">I4", screen:frame_number())) 
 
-function fun()
-    local command = sock:read(100) -- Check if there's a message from the client 
-    if #command > 0 then  
+    elseif command == "STEP" then
+        emu.step() -- progress the game one frame 
+        sock:write(string.pack(">I4", screen:frame_number())) -- Send new frame number as confirmation
 
-        emu.print_debug(command)
+    elseif command == "PIXELS_BYTES" then
+        local byte_count = #screen:pixels()
+        sock:write(string.pack(">I4", byte_count))
 
-        if command == "FRAME_NUMBER" then
-            sock:write(string.pack(">I4", screen:frame_number())) 
+    elseif command == "SCREEN_SIZE" then
+        local width, height = screen.width, screen.height
+        sock:write(string.pack(">I4I4", width, height))
+        
+    elseif command == "PIXELS" then
+        local pixels = screen:pixels()
+        sock:write(pixels)
 
-        elseif command == "STEP" then
-            emu.step() -- progress the game one frame 
-            sock:write(string.pack(">I4", screen:frame_number())) -- Send new frame number as confirmation
-
-        elseif command == "PIXELS_BYTES" then
-            local byte_count = #screen:pixels()
-            sock:write(string.pack(">I4", byte_count))
-
-        elseif command == "SCREEN_SIZE" then
-            local width, height = screen.width, screen.height
-            sock:write(string.pack(">I4I4", width, height))
-            
-        elseif command == "PIXELS" then
-            local pixels = screen:pixels()
-            sock:write(pixels)
-
-        else 
-            emu.print_debug("Unexpected command from client: " .. command)
-
-        end
+    else 
+        emu.print_error("Unexpected command from client: " .. command)
     end
 end
 
-emu.register_frame_done(fun)
+function per_frame()
+    local command = sock:read(100) -- Check if there's a message from the client 
+    if #command > 0 then  
+        emu.print_debug("Received command: " .. command)
+        handle_command(command)
+    end
+end
 
--- Close the socket
--- sock:close()
--- print("Socket closed. Script terminated.")
-
-
--- local function wait_to_read(socket, timeout, bytes_at_once)
---     timeout=timeout or 1 -- default timeout 1 second
---     bytes_at_once=bytes_at_once or 100 -- default read 100 bytes at once
---     local data = ""
---     local time = os.time()
---     repeat
---         local res = socket:read(bytes_at_once)
---         data = data .. res
---     until #res == 0 and #data > 0 or time + 1 < os.time()
---     if data:find("ERR", 1, true) then
---         print("Bad RPC reply, " .. data:sub(8) .. "\n")
---     end
---     if #data == 0 then print("timed out waiting for response\n") end
---     return data
--- end
+emu.register_frame_done(per_frame)
 
 -- ./mamed -window -autoboot_script puppet.lua -autoboot_delay 1 joust 
 -- echo -n "REQUEST" | nc localhost 1942 

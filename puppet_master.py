@@ -1,18 +1,22 @@
 import socket
 import struct
+import logging
 
 class MAMEInterface:
     def __init__(self, host='127.0.0.1', port=1942):
         self.host = host
         self.port = port
         self.sock = None
+        logging.basicConfig(level=logging.INFO)
 
     def connect(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.connect((self.host, self.port))
+        logging.info(f"Connected to {self.host}:{self.port}")
 
     def send_command(self, command):
         self.sock.sendall(command.encode())
+        logging.debug(f"Sent command: {command}")
 
     def receive_exact(self, size):
         data = b''
@@ -21,6 +25,7 @@ class MAMEInterface:
             if not chunk:
                 raise ConnectionError("Connection closed while receiving data")
             data += chunk
+        logging.debug(f"Received data: {data}")
         return data
 
     def get_frame_number(self):
@@ -29,7 +34,7 @@ class MAMEInterface:
 
     def step_frame(self):
         self.send_command("STEP")
-        return struct.unpack('>I', self.receive_exact(4))[0]  # Returns new frame number
+        return struct.unpack('>I', self.receive_exact(4))[0]
 
     def get_screen_size(self):
         self.send_command("SCREEN_SIZE")
@@ -49,29 +54,26 @@ class MAMEInterface:
     def close(self):
         if self.sock:
             self.sock.close()
+            logging.info("Socket closed")
 
 # Usage example
 if __name__ == "__main__":
     mame = MAMEInterface()
     try:
-
         mame.connect()
-
         print(f"Screen size: {mame.get_screen_size()}")
-
         bytes_len = mame.get_pixels_bytes()
         print(f"Pixels bytes len: {bytes_len}")
-        
         print(f"Current frame: {mame.get_frame_number()}")
+        frame_num = mame.step_frame()
+        print(f"Stepped to frame: {frame_num}")
 
-        new_frame = mame.step_frame()
-        print(f"Stepped to frame: {new_frame}")
-        
         # Example of repeated pixel fetching
-        for _ in range(5):  # Simulate fetching 5 frames
+        while True: 
             pixels = mame.get_pixels(bytes_len)
             print(f"Received pixel data of size: {len(pixels)} bytes")
-            new_frame = mame.step_frame()
-            print(f"Stepped to frame: {new_frame}")
+            frame_num = mame.step_frame()
+            print(f"Stepped to frame: {frame_num}")
+
     finally:
         mame.close()
