@@ -7,14 +7,15 @@ emu.print_info("Listening on port 1942")
 screen = manager.machine.screens[":screen"]
 
 function fun()
-    local message = sock:read(100) -- Check if there's a message from the client 
-    if #message > 0 then  
-        -- emu.print_info("Received from client: " .. message)
-        if message == "REQUEST" then
-            sock:write("Frame number: " .. screen:frame_number() .. "\n") -- Send a message to the Python server
+    local command = sock:read(100) -- Check if there's a message from the client 
+    if #command > 0 then  
+        emu.print_debug(command)
+        if command == "FRAME_NUMBER" then
+            sock:write(tostring(screen:frame_number())) -- Send a message to the Python server
+        elseif command == "STEP" then
             emu.step() -- progress the game one frame 
-        else
-            emu.print_debug("Unexpected message from client: " .. message)
+        else 
+            emu.print_debug("Unexpected command from client: " .. command)
         end
     end
 end
