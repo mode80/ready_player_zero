@@ -1,59 +1,77 @@
-#%%
 import socket
-import argparse
-import time
-import select
+import struct
 
-def getall(sock, buffer_size=100, timeout=3):
-    """ Get all inbound data from socket with a timeout, handling any data size correctly. """
-    data = bytearray()
-    start_time = time.time()
-    while True:
-        try:
-            ready = select.select([sock], [], [], max(0, timeout - (time.time() - start_time)))
-            if ready[0]:
-                part = sock.recv(buffer_size)
-                if not part:  # Connection closed by remote end
-                    break
-                data.extend(part)
-                if len(part) < buffer_size:  # Less data than buffer_size, likely all received
-                    break
-            elif time.time() - start_time >= timeout:
-                break  # Timeout reached
-        except socket.error as e:
-            print(f"Socket error: {e}")
-            break
-    return bytes(data)
+class MAMEInterface:
+    def __init__(self, host='127.0.0.1', port=1942):
+        self.host = host
+        self.port = port
+        self.sock = None
 
-def cmd(cmd: str, sock): 
-    """ Send command to the server and get response. """
-    sock.sendall(cmd.encode('utf-8')) 
-    data = getall(sock)
-    return data.decode()
+    def connect(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.connect((self.host, self.port))
 
-def main():
-    # take in command line any args 
-    parser = argparse.ArgumentParser(description='Socket client.')
-    parser.add_argument('--hostname', type=str, default='127.0.0.1', help='Server hostname')
-    parser.add_argument('--port', type=int, default=1942, help='Server port')
-    args = parser.parse_args()
+    def send_command(self, command):
+        self.sock.sendall(command.encode())
 
-    # Create a socket object and connect to the server
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # AF_INET: IPv4, SOCK_STREAM: TCP
-    sock.connect((args.hostname, args.port))
+    def receive_exact(self, size):
+        data = b''
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise ConnectionError("Connection closed while receiving data")
+            data += chunk
+        return data
 
-    # Issue commands to the server
-    while True:
-        response = cmd('FRAME_NUMBER', sock) 
-        print(response)
-        response = cmd('STEP', sock) 
-   
-    # Close the socket
-    sock.close()
+    def get_frame_number(self):
+        self.send_command("FRAME_NUMBER")
+        return struct.unpack('>I', self.receive_exact(4))[0]
 
+    def step_frame(self):
+        self.send_command("STEP")
+        return struct.unpack('>I', self.receive_exact(4))[0]  # Returns new frame number
 
-#blahablah
+    def get_screen_size(self):
+        self.send_command("SCREEN_SIZE")
+        width, height = struct.unpack('>II', self.receive_exact(8))
+        return (width, height)
+
+    def get_pixels_bytes(self):
+        self.send_command("PIXELS_BYTES")
+        bytes_len = struct.unpack('>I', self.receive_exact(4))[0]
+        return bytes_len 
+
+    def get_pixels(self, bytes_len):
+        self.send_command("PIXELS")
+        pixel_data = self.receive_exact(bytes_len) 
+        return pixel_data
+
+    def close(self):
+        if self.sock:
+            self.sock.close()
+
+# Usage example
 if __name__ == "__main__":
-    main()
+    mame = MAMEInterface()
+    try:
 
-# %%
+        mame.connect()
+
+        print(f"Screen size: {mame.get_screen_size()}")
+
+        bytes_len = mame.get_pixels_bytes()
+        print(f"Pixels bytes len: {bytes_len}")
+        
+        print(f"Current frame: {mame.get_frame_number()}")
+
+        new_frame = mame.step_frame()
+        print(f"Stepped to frame: {new_frame}")
+        
+        # Example of repeated pixel fetching
+        for _ in range(5):  # Simulate fetching 5 frames
+            pixels = mame.get_pixels(bytes_len)
+            print(f"Received pixel data of size: {len(pixels)} bytes")
+            new_frame = mame.step_frame()
+            print(f"Stepped to frame: {new_frame}")
+    finally:
+        mame.close()
