@@ -33,8 +33,10 @@ end
 local function per_frame()
     local command = sock:read(1024)  
     if #command > 0 then
-        emu.print_debug("Received command: " .. command)
+        emu.print_debug(command)
         local result = execute_lua(command)
+        -- convert boolean result to string
+        if type(result) == "boolean" then result = tostring(result) end
         sock:write(result .. "\n")  -- Add newline as a "message end" marker 
     end
 end
@@ -44,7 +46,3 @@ emu.register_frame_done(per_frame)
 emu.add_machine_stop_notifier(function() sock:close() end)
 
 
-
--- e.g. 
--- mame joust -window -nomouse -nokeys -skip_gameinfo -sound none -lua_plugin console_wrapper
--- ./mamed -window -debug -skip_gameinfo -autoboot_script ~/Dropbox/code/mamegym/console_wrapper.lua joust

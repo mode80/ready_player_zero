@@ -21,7 +21,7 @@ class MAMEConsoleInterface:
             if not chunk:
                 raise ConnectionError("Connection closed while receiving data")
             response += chunk
-        # all but the last byte, which is the newline "end of transimission" character
+        #  trim the newline "end of transimission" character
         return response[:-1]
 
     def close(self):
@@ -31,8 +31,9 @@ class MAMEConsoleInterface:
 
 # Usage example
 if __name__ == "__main__":
+
     mame = MAMEConsoleInterface()
-    # try:
+
     mame.connect()
 
     #Pause the game while we wait for a client  
@@ -57,15 +58,14 @@ if __name__ == "__main__":
 
     # Get pixel data
     result = mame.execute("s=manager.machine.screens[':screen']; return s:pixels()")
-    print(result)
+    # print(result)
 
     # Send an input
-    result = mame.execute("input:code_pressed(input:code_from_token('P1_BUTTON1'))")
+    result = mame.execute("i=manager.machine.input; return i:code_pressed(i:code_from_token('P1_BUTTON1'))")
     print(f"Button press result: {result}")
 
     # Reset the game
-    result = mame.execute("manager.machine:soft_reset()")
-    print(f"Reset game result: {result}")
+    # result = mame.execute("manager.machine:soft_reset()")
+    # print(f"Reset game result: {result}")
 
-    # finally:
-        # mame.close()
+    mame.close()
