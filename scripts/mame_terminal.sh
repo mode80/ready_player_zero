@@ -1,6 +1,6 @@
 #!/bin/zsh
 
-MAME_SCRIPT="${PWD}/scripts/launch_mame.sh"
+MAME_SCRIPT="${PWD}/scripts/run_mame.sh"
 
 # Open a new Terminal window and run the MAME script
 osascript <<EOF
@@ -11,6 +11,4 @@ end tell
 EOF
 
 # Wait for MAME to start (adjust the sleep time if needed)
-sleep 5
-
-echo "MAME should now be running. Starting debug session..."
+sleep 6

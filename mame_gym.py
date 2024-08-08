@@ -1,14 +1,14 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from puppet_master import MAMEInterface
+from mame_client import MAMEConsole
 
 class MAMEEnv(gym.Env):
     metadata = {'render_modes': ['rgb_array'], 'render_fps': 60}
 
     def __init__(self, game='joust', render_mode=None):
         super().__init__()
-        self.mame = MAMEInterface()
+        self.mame = MAMEConsole()
         self.game = game
         self.render_mode = render_mode
 
@@ -16,8 +16,8 @@ class MAMEEnv(gym.Env):
         self.mame.connect()
 
         # Get screen dimensions
-        self.width, self.height = self.mame.get_screen_size()
-        self.bytes_len = self.mame.get_pixels_bytes()
+        self.width, self.height = self._get_screen_size()
+        self.bytes_len = self._get_pixels_bytes()
 
         # Define action and observation spaces
         # This is an example for Joust, adjust as needed for other games
@@ -26,11 +26,11 @@ class MAMEEnv(gym.Env):
         self.observation_space = spaces.Box(low=0, high=255, shape=(self.height, self.width, 3), dtype=np.uint8) 
 
     def step(self, action):
-        # Send action to MAME (you'll need to implement this in MAMEInterface)
-        self.mame.send_action(action)
+        # Send action to MAME
+        self._send_action(action)
 
         # Step the emulation forward
-        self.mame.step_frame()
+        self.mame.execute("emu.step()")
 
         # Get the new observation
         observation = self._get_observation()
@@ -49,8 +49,8 @@ class MAMEEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        # Reset the MAME emulation (you'll need to implement this in MAMEInterface)
-        self.mame.reset_game()
+        # Reset the MAME emulation
+        self.mame.execute("emu.soft_reset()")
 
         # Get initial observation
         observation = self._get_observation()
@@ -67,12 +67,46 @@ class MAMEEnv(gym.Env):
     def close(self):
         self.mame.close()
 
+    def _get_screen_size(self):
+        result = self.mame.execute("return string.pack('>II', screen.width, screen.height)")
+        return struct.unpack('>II', result)
+
+    def _get_pixels_bytes(self):
+        result = self.mame.execute("return string.pack('>I', #screen:pixels())")
+        return struct.unpack('>I', result)[0]
+
+    def _get_frame_number(self):
+        result = self.mame.execute("return string.pack('>I', screen:frame_number())")
+        return struct.unpack('>I', result)[0]
+
+    def _get_pixels(self):
+        return self.mame.execute("return screen:pixels()")
+
+    def _send_input(self, input_command):
+        lua_code = f"""
+        local field = ioport.ports[':IN0']:field('P1 {input_command}')
+        field:set_value(1)
+        emu.wait_time(0.016)  -- Wait for approximately one frame (assuming 60 FPS)
+        field:set_value(0)
+        """
+        self.mame.execute(lua_code)
+
     def _get_observation(self):
-        pixels = self.mame.get_pixels(self.bytes_len)
+        pixels = self._get_pixels()
         observation = np.frombuffer(pixels, dtype=np.uint8).reshape((self.height, self.width, 4))
         # Convert RGBA to RGB by discarding the alpha channel
         observation = observation[:,:,:3]
         return observation
+
+    def _send_action(self, action):
+        # Map action to MAME input commands
+        actions = [
+            "LEFT", "RIGHT", "BUTTON1",
+            "LEFT BUTTON1", "RIGHT BUTTON1", ""  # No-op
+        ]
+        mame_action = actions[action]
+        if mame_action:
+            self._send_input(mame_action)
 
     def _calculate_reward(self):
         # Implement game-specific reward logic
