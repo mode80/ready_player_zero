@@ -12,10 +12,14 @@ class MAMEEnv(gym.Env):
         self.game = game
         self.render_mode = render_mode
 
-        # Connect to MAME
+        # Connect to a MAME instance launched with -autoboot_script mame_server.lua  
         self.mame.connect()
 
-        # Get screen dimensions
+        # Start with game paused and disable frame rate throttling for max training speed
+        self._pause()
+        self._throttled_off()
+
+        # Get needed game values 
         self.width, self.height = self._get_screen_size()
         self.bytes_len = self._get_pixels_bytes()
 
@@ -30,7 +34,7 @@ class MAMEEnv(gym.Env):
         self._send_action(action)
 
         # Step the emulation forward
-        self.mame.execute("emu.step()")
+        self._step()
 
         # Get the new observation
         observation = self._get_observation()
@@ -50,7 +54,7 @@ class MAMEEnv(gym.Env):
         super().reset(seed=seed)
         
         # Reset the MAME emulation
-        self.mame.execute("emu.soft_reset()")
+        self._soft_reset()
 
         # Get initial observation
         observation = self._get_observation()
@@ -67,27 +71,45 @@ class MAMEEnv(gym.Env):
     def close(self):
         self.mame.close()
 
+    def _pause(self):
+        self.mame.execute("emu.pause()")
+
+    def _unpause(self):
+        self.mame.execute("emu.unpause()")
+
+    def _throttled_on(self):
+        self.mame.execute("manager.machine.video.throttled = true")
+
+    def _throttled_off(self):
+        self.mame.execute("manager.machine.video.throttled = false")
+
+    def _step(self):
+        self.mame.execute("emu.step()")
+
+    def _soft_reset(self):
+        self.mame.execute("manager.machine.soft_reset()")
+
     def _get_screen_size(self):
-        result = self.mame.execute("return string.pack('>II', screen.width, screen.height)")
-        return struct.unpack('>II', result)
+        result = self.mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height")
+        width, height = map(int, result.decode().split('x'))
+        return width, height
 
     def _get_pixels_bytes(self):
-        result = self.mame.execute("return string.pack('>I', #screen:pixels())")
-        return struct.unpack('>I', result)[0]
+        result = self.mame.execute("s=manager.machine.screens[':screen']; return #s:pixels()")
+        return int(result.decode())
 
     def _get_frame_number(self):
-        result = self.mame.execute("return string.pack('>I', screen:frame_number())")
-        return struct.unpack('>I', result)[0]
+        result = self.mame.execute("s=manager.machine.screens[':screen']; return s:frame_number()")
+        return int(result.decode())
 
     def _get_pixels(self):
-        return self.mame.execute("return screen:pixels()")
+        return self.mame.execute("s=manager.machine.screens[':screen']; return s:pixels()")
 
     def _send_input(self, input_command):
         lua_code = f"""
-        local field = ioport.ports[':IN0']:field('P1 {input_command}')
-        field:set_value(1)
-        emu.wait_time(0.016)  -- Wait for approximately one frame (assuming 60 FPS)
-        field:set_value(0)
+        local button = manager.machine.input:code_from_token('P1_{input_command}');
+        manager.machine.input:code_pressed(button);
+        manager.machine.input:code_released(button);
         """
         self.mame.execute(lua_code)
 
@@ -98,15 +120,13 @@ class MAMEEnv(gym.Env):
         observation = observation[:,:,:3]
         return observation
 
-    def _send_action(self, action):
+    def _send_action(self, action, player=1):
         # Map action to MAME input commands
-        actions = [
-            "LEFT", "RIGHT", "BUTTON1",
-            "LEFT BUTTON1", "RIGHT BUTTON1", ""  # No-op
-        ]
+        player1_actions = [ "P1_LEFT", "P1_RIGHT", "P1_BUTTON1", "P1_LEFT P1_BUTTON1", "P1_RIGHT P1_BUTTON1", ""]
+        player2_actions = [ "P2_LEFT", "P2_RIGHT", "P2_BUTTON1", "P2_LEFT P2_BUTTON1", "P2_RIGHT P2_BUTTON1", ""]
+        actions = player1_actions if player == 1 else player2_actions
         mame_action = actions[action]
-        if mame_action:
-            self._send_input(mame_action)
+        if mame_action: self._send_input(mame_action)
 
     def _calculate_reward(self):
         # Implement game-specific reward logic

@@ -12,6 +12,11 @@ class MAMEConsole:
         self.sock.connect((self.host, self.port))
         print(f"Connected to {self.host}:{self.port}")
 
+    def close(self):
+        if self.sock:
+            self.sock.close()
+            print("Closing client connection")
+
     def execute(self, lua_code):
         self.sock.sendall(lua_code.encode() + b'\n')  # Add newline as a delimiter
         response = b''
@@ -23,12 +28,27 @@ class MAMEConsole:
         #  trim the newline "end of transimission" character
         return response[:-1]
 
-    def close(self):
-        if self.sock:
-            self.sock.close()
-            print("Socket closed")
+    # Set up command line argument parsing
+    parser = argparse.ArgumentParser(
+        description="Connect to MAME remotely",
+        epilog="""
+    Connects to MAME via its 'mame_server.lua' plugin, allowing you to send Lua commands remotely.
+    For more details on available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
 
-if __name__ == "__main__":
+    It's a one off Lua code executer, not a REPL, so send multiple lines of code in a single command.
+    (Use ';' to separate statements, or shift-enter in a multi-line string.)
+
+    Special command 'quit' exits closes the connection.
+
+    Example command line usage:
+    python mame_client.py --host 127.0.0.1 --port 1942 
+    """
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="MAME console host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=1942, help="MAME console port (default: 1942)")
+    args = parser.parse_args()
+
+def main():
 
     # Set up command line argument parsing
     parser = argparse.ArgumentParser(description="Connect to MAME remote console")
@@ -39,18 +59,15 @@ if __name__ == "__main__":
     # Control MAME from the command line
     mame = MAMEConsole(host=args.host, port=args.port)
     mame.connect()
-
-    # run a user input look sending each command to the console and returning the output
-    while True:
+    while True: # user input loop sends each command to the console and returns output
         lua_code = input("[MAME] ")
-        if lua_code.lower() == 'quit':
-            break
         try:
             result = mame.execute(lua_code)
             print(f"{result}")
         except Exception as e:
-            print(f"ERROR: {e}")
-
+            print(f" ERROR: {e}")
+        if lua_code.lower().strip() == "quit": break 
+    
     mame.close()
 
 
@@ -60,7 +77,7 @@ def sample_usage():
 
     mame.connect()
 
-    #Pause the game while we wait for a client  
+    #Pause the game 
     result = mame.execute("emu.pause()")
     print(f"Paused : {result}")
 
@@ -69,7 +86,7 @@ def sample_usage():
     print(f"Throttle off : {result}")
 
     # Get screen size
-    result = mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height") # TODO need to iterate over all screens
+    result = mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height") # TODO should iterate over all screens
     print(f"Screen size: {result}")
 
     # Get current frame number
@@ -93,3 +110,7 @@ def sample_usage():
     print(f"Reset game result: {result}")
 
     mame.close()
+
+
+if __name__ == "__main__": main()
+
