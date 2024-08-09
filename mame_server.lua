@@ -33,7 +33,7 @@ end
 local function runs_per_frame()
     local command = sock:read(1024)
     if #command > 0 then
-        if command:sub(1,4) == "quit" then -- Client is intentionally disconnecting
+        if command:gsub("\r?\n?", "") == "quit" then -- Client is intentionally disconnecting
             sock:write("\n") -- Send a newline to acknowledge the command
             emu.print_info("Closing Server connection")
             sock:close() -- Close this connection

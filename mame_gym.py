@@ -1,25 +1,26 @@
+from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from mame_client import MAMEConsole
+from mame_client import MAMEClient
+import matplotlib.pyplot as plt # type:ignore
 
 class MAMEEnv(gym.Env):
     metadata = {'render_modes': ['rgb_array'], 'render_fps': 60}
 
     def __init__(self, game='joust', render_mode=None):
         super().__init__()
-        self.mame = MAMEConsole()
+        self.mame = MAMEClient()
         self.game = game
         self.render_mode = render_mode
 
         # Connect to a MAME instance launched with -autoboot_script mame_server.lua  
         self.mame.connect()
+        
+        # Make sure the game is prepped from the start 
+        self._soft_reset()
 
-        # Start with game paused and disable frame rate throttling for max training speed
-        self._pause()
-        self._throttled_off()
-
-        # Get needed game values 
+        # Fetch relevant values 
         self.width, self.height = self._get_screen_size()
         self.bytes_len = self._get_pixels_bytes()
 
@@ -87,7 +88,10 @@ class MAMEEnv(gym.Env):
         self.mame.execute("emu.step()")
 
     def _soft_reset(self):
+        self._unpause()
         self.mame.execute("manager.machine.soft_reset()")
+        self._pause()
+        self._throttled_off()
 
     def _get_screen_size(self):
         result = self.mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height")
@@ -115,9 +119,11 @@ class MAMEEnv(gym.Env):
 
     def _get_observation(self):
         pixels = self._get_pixels()
-        observation = np.frombuffer(pixels, dtype=np.uint8).reshape((self.height, self.width, 4))
-        # Convert RGBA to RGB by discarding the alpha channel
-        observation = observation[:,:,:3]
+        # trim any "footer" data beyond pixel values of self.height * self.width * 4
+        pixels = pixels[:self.height * self.width * 4]
+        # unflatten bytes into row,col,channel format; keep all rows and cols, but transform 'ABGR' to RGB  
+        observation = np.frombuffer(pixels[:self.height * self.width * 4], 
+                                    dtype=np.uint8).reshape((self.height, self.width, 4))[:,:,2::-1]
         return observation
 
     def _send_action(self, action, player=1):
@@ -142,7 +148,13 @@ class MAMEEnv(gym.Env):
 # Example usage
 if __name__ == "__main__":
     env = MAMEEnv(game='joust', render_mode='rgb_array')
+
     observation, info = env.reset()
+
+    # # debug display the observation as an image
+    # env._unpause()
+    # sleep(6)
+    # plt.imshow( env._get_observation() )
 
     for _ in range(1000):
         action = env.action_space.sample()  # Random action

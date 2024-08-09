@@ -2,7 +2,7 @@
 
 MAME_SCRIPT="${PWD}/scripts/run_mame.sh"
 
-# Open a new Terminal window and run the MAME script
+# Open a persistent terminal window and run the MAME script there
 osascript <<EOF
 tell application "Terminal"
     do script "zsh $MAME_SCRIPT"

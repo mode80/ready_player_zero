@@ -1,7 +1,7 @@
 import socket
 import argparse
 
-class MAMEConsole:
+class MAMEClient:
     def __init__(self, host='127.0.0.1', port=1942):
         self.host = host
         self.port = port
@@ -33,7 +33,7 @@ class MAMEConsole:
 def main():
     blurb = """
 Connects to a MAME that's running the 'mame_server.lua' script, allowing you to send Lua commands remotely.
-For more details on available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
+For available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
 
 Example:
 
@@ -64,7 +64,7 @@ Example:
     args = parser.parse_args()
 
     # Control MAME from the command line
-    mame = MAMEConsole(host=args.host, port=args.port)
+    mame = MAMEClient(host=args.host, port=args.port)
     mame.connect()
     while True: # user input loop sends each command to the console and returns output
         lua_code = input("\n> ")
@@ -80,7 +80,7 @@ Example:
 
 def sample_usage():
 
-    mame = MAMEConsole()
+    mame = MAMEClient()
 
     mame.connect()
 
