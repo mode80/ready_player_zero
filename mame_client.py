@@ -35,10 +35,9 @@ class MAMEConsole:
     Connects to MAME via its 'mame_server.lua' plugin, allowing you to send Lua commands remotely.
     For more details on available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
 
-    It's a one off Lua code executer, not a REPL, so send multiple lines of code in a single command.
-    (Use ';' to separate statements, or shift-enter in a multi-line string.)
+    It's a one-off Lua code executor, not a REPL, so to send multiple lines of code separate with ';' 
 
-    Special command 'quit' exits closes the connection.
+    Special command 'quit' exits and closes the connection.
 
     Example command line usage:
     python mame_client.py --host 127.0.0.1 --port 1942 

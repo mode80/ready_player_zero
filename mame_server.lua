@@ -17,14 +17,17 @@ local function execute_lua(code)
             if result == nil then
                 return "OK" -- Command executed successfully (no return value)
             else
-                return result -- tostring(result)?
+                return result 
             end
-        else
-            return "Runtime error: " .. tostring(result)
-        end
-    else
-        return "Syntax error: " .. tostring(err)
-    end
+        else return "Runtime error: " .. tostring(result) end
+    else return "Syntax error: " .. tostring(err) end
+end
+
+local listen_for_client = function()
+    if not sock then sock = emu.file("rwc") end
+    sock:open("socket." .. config.host .. ":" .. config.port) -- Reopen a socket for next
+    emu.print_info("MAME listening on port " .. config.port)
+    CLIENT_CONNECTED = false 
 end
 
 -- checks for inbound Lua commands after each frame
@@ -35,11 +38,10 @@ local function runs_per_frame()
             sock:write("\n") -- Send a newline to acknowledge the command
             emu.print_info("Closing Server connection")
             sock:close() -- Close this connection
-            sock:open("socket." .. config.host .. ":" .. config.port) -- Reopen a socket for next
-            emu.print_info("MAME listening on port " .. config.port)
+            listen_for_client() -- Start listening for a new client
         else
             -- Process regular commands
-            -- emu.print_debug("Command:")
+            CLIENT_CONNECTED = true
             emu.print_debug(command)
             local result = execute_lua(command)
             if type(result) == "boolean" then result = tostring(result) end
@@ -48,13 +50,7 @@ local function runs_per_frame()
     end
 end
 
--- cue up the socket
-sock = emu.file("rwc") 
-sock:open("socket." .. config.host .. ":" .. config.port)
-emu.print_info("MAME listening on port ".. config.port)
 
+listen_for_client()
 emu.register_frame_done(runs_per_frame)
-
--- emu.add_machine_stop_notifier(function() sock:close(); print("Socket closed"); end)
-
 
