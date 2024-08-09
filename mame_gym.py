@@ -31,33 +31,27 @@ class MAMEEnv(gym.Env):
         self.observation_space = spaces.Box(low=0, high=255, shape=(self.height, self.width, 3), dtype=np.uint8) 
 
     def step(self, action):
-        # Send action to MAME
         self._send_action(action)
-
-        # Step the emulation forward
         self._step()
-
-        # Get the new observation
         observation = self._get_observation()
-
-        # Calculate reward (you'll need to implement game-specific reward logic)
-        reward = self._calculate_reward()
-
-        # Check if the episode is done
-        done = self._check_done()
-
-        # Get additional info
+        reward = self._calculate_reward(player=1)
+        done = self._check_done(player=1)
         info = {}
-
         return observation, reward, done, False, info
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        # Reset the MAME emulation
+        # reset the mame emulation
         self._soft_reset()
+        
+        # initialize last score and lives for both players
+        self.last_score = {1: self._get_score(1), 2: self._get_score(2)}
+        self.last_lives = {1: self._get_lives(1), 2: self._get_lives(2)}
+        
+        self._get_ready_to_play()
 
-        # Get initial observation
+        # get initial observation
         observation = self._get_observation()
 
         info = {}
@@ -71,6 +65,12 @@ class MAMEEnv(gym.Env):
 
     def close(self):
         self.mame.close()
+
+    def _get_ready_to_play(self):
+        # Insert a coin
+        self.mame.execute("manager.machine.input.port_by_tag('COIN1').fields['COIN1'].set_value(1)")
+        # Press start button
+        self.mame.execute("manager.machine.input.port_by_tag('START').fields['START'].set_value(1)")
 
     def _pause(self):
         self.mame.execute("emu.pause()")
@@ -128,22 +128,58 @@ class MAMEEnv(gym.Env):
 
     def _send_action(self, action, player=1):
         # Map action to MAME input commands
-        player1_actions = [ "P1_LEFT", "P1_RIGHT", "P1_BUTTON1", "P1_LEFT P1_BUTTON1", "P1_RIGHT P1_BUTTON1", ""]
-        player2_actions = [ "P2_LEFT", "P2_RIGHT", "P2_BUTTON1", "P2_LEFT P2_BUTTON1", "P2_RIGHT P2_BUTTON1", ""]
-        actions = player1_actions if player == 1 else player2_actions
+        P1_ACTIONS = [ "P1_LEFT", "P1_RIGHT", "P1_BUTTON1", "P1_LEFT P1_BUTTON1", "P1_RIGHT P1_BUTTON1", ""]
+        P2_ACTIONS = [ "P2_LEFT", "P2_RIGHT", "P2_BUTTON1", "P2_LEFT P2_BUTTON1", "P2_RIGHT P2_BUTTON1", ""]
+        actions = P1_ACTIONS if player == 1 else P2_ACTIONS
         mame_action = actions[action]
         if mame_action: self._send_input(mame_action)
 
-    def _calculate_reward(self):
-        # Implement game-specific reward logic
-        # For Joust, this could be based on score, surviving, defeating enemies, etc.
-        # You'll need to read game memory to get this information
-        return 0
+    
+    # Memory addresses for Joust
+    LIVES_ADDR = {1: 0xA052, 2: 0xA05C}
+    SCORE_ADDR = {1: 0xA04C, 2: 0xA058}
+    MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
+    
+    def _read_byte(self, address):
+        result = self.mame.execute(f"return manager.machine.devices[':maincpu'].spaces['program']:read_u8(0x{address:X})")
+        return int(result.decode())
 
-    def _check_done(self):
-        # Implement game-specific logic to check if the episode is done
-        # This could be based on lives remaining, game over flag, etc.
-        return False
+    def _read_word(self, address):
+        result = self.mame.execute(f"return manager.machine.devices[':maincpu'].spaces['program']:read_u16(0x{address:X})")
+        return int(result.decode())
+
+    def _get_lives(self, player=1):
+        return self._read_byte(self.LIVES_ADDR[player])
+
+    def _get_score(self, player=1):
+        return self._read_word(self.SCORE_ADDR[player])
+
+    def _calculate_reward(self, player=1):
+        # Get current score and lives
+        current_score = self._get_score(player)
+        current_lives = self._get_lives(player)
+        
+        # Calculate score,lives differences
+        score_diff = current_score - self.last_score[player]
+        lives_diff = current_lives - self.last_lives[player]
+        
+        # Update last score and lives
+        self.last_score[player] = current_score
+        self.last_lives[player] = current_lives
+        
+        # Reward for score increase
+        reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
+        
+        # Penalty for losing lives
+        if lives_diff < 0:
+            reward -= 1.0  # Penalty for each life lost
+        
+        return reward
+
+    def _check_done(self, player=1):
+        current_lives = self._get_lives(player)
+        return current_lives == 0  # Game is over when player has no lives left
+
 
 # Example usage
 if __name__ == "__main__":
