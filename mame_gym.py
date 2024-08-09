@@ -5,6 +5,7 @@ import numpy as np
 from mame_client import MAMEClient
 import matplotlib.pyplot as plt # type:ignore
 
+
 class MAMEEnv(gym.Env):
     metadata = {'render_modes': ['rgb_array'], 'render_fps': 60}
 
@@ -14,11 +15,11 @@ class MAMEEnv(gym.Env):
         self.game = game
         self.render_mode = render_mode
 
-        # Connect to a MAME instance launched with -autoboot_script mame_server.lua  
+        # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
         self.mame.connect()
         
         # Make sure the game is prepped from the start 
-        self._soft_reset()
+        self.reset()
 
         # Fetch relevant values 
         self.width, self.height = self._get_screen_size()
