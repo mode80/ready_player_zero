@@ -23,11 +23,10 @@ local function execute_lua(code)
     else return "Syntax error: " .. tostring(err) end
 end
 
-local listen_for_client = function()
+local function listen_for_client()
     if not sock then sock = emu.file("rwc") end
     sock:open("socket." .. config.host .. ":" .. config.port) -- Reopen a socket for next
-    emu.print_info("MAME listening on port " .. config.port)
-    CLIENT_CONNECTED = false 
+    emu.print_info("MAME listening on " .. config.host .. ":" .. config.port .. "\n")
 end
 
 -- checks for inbound Lua commands after each frame
@@ -41,11 +40,10 @@ local function runs_per_frame()
             listen_for_client() -- Start listening for a new client
         else
             -- Process regular commands
-            CLIENT_CONNECTED = true
-            emu.print_debug(command)
-            local result = execute_lua(command)
-            if type(result) == "boolean" then result = tostring(result) end
-            sock:write(result .. "\n")
+            emu.print_debug(command:gsub("\n$", "")) -- debugging output  
+            local result = execute_lua(command) -- ! 
+            -- result = tostring(result) 
+            sock:write(result .. "\n") -- Send the result back to the client
         end
     end
 end
@@ -53,4 +51,3 @@ end
 
 listen_for_client()
 emu.register_frame_done(runs_per_frame)
-

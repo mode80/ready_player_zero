@@ -15,7 +15,7 @@ class MAMEConsole:
     def close(self):
         if self.sock:
             self.sock.close()
-            print("Closing client connection")
+            print("Closing Client connection")
 
     def execute(self, lua_code):
         self.sock.sendall(lua_code.encode() + b'\n')  # Add newline as a delimiter
@@ -28,29 +28,37 @@ class MAMEConsole:
         #  trim the newline "end of transimission" character
         return response[:-1]
 
-    # Set up command line argument parsing
-    parser = argparse.ArgumentParser(
-        description="Connect to MAME remotely",
-        epilog="""
-    Connects to MAME via its 'mame_server.lua' plugin, allowing you to send Lua commands remotely.
-    For more details on available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
 
-    It's a one-off Lua code executor, not a REPL, so to send multiple lines of code separate with ';' 
-
-    Special command 'quit' exits and closes the connection.
-
-    Example command line usage:
-    python mame_client.py --host 127.0.0.1 --port 1942 
-    """
-    )
-    parser.add_argument("--host", default="127.0.0.1", help="MAME console host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=1942, help="MAME console port (default: 1942)")
-    args = parser.parse_args()
 
 def main():
+    blurb = """
+Connects to a MAME that's running the 'mame_server.lua' script, allowing you to send Lua commands remotely.
+For more details on available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
+
+Example:
+
+    % ./mame joust -window -autoboot_script ~/mamegym/mame_server.lua 
+    MAME listening on 127.0.0.1:1942
+
+    % python ~/mamegym/mame_client.py 
+    Connected to 127.0.0.1:1942
+
+    > emu.pause()
+    b'OK'
+
+    > a=1; b=2
+    b'OK'
+
+    > return a+b
+    b'3'
+
+    > quit
+"""
 
     # Set up command line argument parsing
-    parser = argparse.ArgumentParser(description="Connect to MAME remote console")
+    parser = argparse.ArgumentParser( 
+        description=blurb,
+        formatter_class=argparse.RawDescriptionHelpFormatter) 
     parser.add_argument("--host", default="127.0.0.1", help="MAME console host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=1942, help="MAME console port (default: 1942)")
     args = parser.parse_args()
@@ -59,7 +67,7 @@ def main():
     mame = MAMEConsole(host=args.host, port=args.port)
     mame.connect()
     while True: # user input loop sends each command to the console and returns output
-        lua_code = input("[MAME] ")
+        lua_code = input("\n> ")
         try:
             result = mame.execute(lua_code)
             print(f"{result}")
