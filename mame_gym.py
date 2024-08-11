@@ -4,34 +4,79 @@ from gymnasium import spaces
 import numpy as np
 from mame_client import MAMEClient
 import matplotlib.pyplot as plt # type:ignore
+import json
+
+class JoustEnv(gym.Env):
+
+    # Memory addresses for Joust
+    P1_LIVES_ADDR = 0xA052
+    P1_SCORE_ADDR = 0xA04C
+    P2_LIVES_ADDR = 0xA05C
+    P2_SCORE_ADDR = 0xA058
+
+    MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
+
+    width=292
+    height=240
+
+    # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
+    observation_space = spaces.Box(low=0, high=255, shape=(height, width, 3), dtype=np.uint8) 
 
 
-class MAMEEnv(gym.Env):
-    metadata = {'render_modes': ['rgb_array'], 'render_fps': 60}
+    def __init__(self, ):
 
-    def __init__(self, game='joust', render_mode=None):
         super().__init__()
+
         self.mame = MAMEClient()
-        self.game = game
-        self.render_mode = render_mode
 
         # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
         self.mame.connect()
-        
+
+        # Gatther input info for this rom
+        # self.inputs = self._get_mame_inputs() 
+        self.inputs = {
+            ":IN0":{
+                "1 Player Start":32,
+                "2 Players Start":16
+            },
+            ":INP2": {
+                "P2 Button 1":4,
+                "P2 Left":1,
+                "P2 Right":2
+            },
+            ":INP1A":[],
+            ":INP2A":[],
+            ":INP1":{
+                "P1 Button 1":4,
+                "P1 Right":2,
+                "P1 Left":1
+            },
+            ":IN2":{
+                "Auto Up / Manual Down":1,
+                "Coin 2":32,
+                "Advance":2,
+                "Coin 1":16,
+                "High Score Reset":8,
+                "Coin 3":4,
+                "Tilt":64
+            },
+            ":IN1":[]
+        }
+
+        # Define action and observation space
+        # action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
+
+        # Define action space based on available inputs
+        self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
+
         # Make sure the game is prepped from the start 
         self.reset()
 
-        # Fetch relevant values 
-        self.width, self.height = self._get_screen_size()
-        self.bytes_len = self._get_pixels_bytes()
-
-        # Define action and observation spaces
-        # This is an example for Joust, adjust as needed for other games
-        self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
-        # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
-        self.observation_space = spaces.Box(low=0, high=255, shape=(self.height, self.width, 3), dtype=np.uint8) 
+        self.render_mode = None 
+        self.reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
 
     def step(self, action):
+        
         self._send_action(action)
         self._step()
         observation = self._get_observation()
@@ -45,10 +90,12 @@ class MAMEEnv(gym.Env):
         
         # reset the mame emulation
         self._soft_reset()
+        self._pause()
+        self._throttled_off()
         
         # initialize last score and lives for both players
-        self.last_score = {1: self._get_score(1), 2: self._get_score(2)}
-        self.last_lives = {1: self._get_lives(1), 2: self._get_lives(2)}
+        self.last_score = {1: 0, 2: 0}
+        self.last_lives = {1: 3, 2: 3}
         
         self._get_ready_to_play()
 
@@ -89,10 +136,7 @@ class MAMEEnv(gym.Env):
         self.mame.execute("emu.step()")
 
     def _soft_reset(self):
-        self._unpause()
         self.mame.execute("manager.machine.soft_reset()")
-        self._pause()
-        self._throttled_off()
 
     def _get_screen_size(self):
         result = self.mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height")
@@ -110,14 +154,6 @@ class MAMEEnv(gym.Env):
     def _get_pixels(self):
         return self.mame.execute("s=manager.machine.screens[':screen']; return s:pixels()")
 
-    def _send_input(self, input_command):
-        lua_code = f"""
-        local button = manager.machine.input:code_from_token('P1_{input_command}');
-        manager.machine.input:code_pressed(button);
-        manager.machine.input:code_released(button);
-        """
-        self.mame.execute(lua_code)
-
     def _get_observation(self):
         pixels = self._get_pixels()
         # trim any "footer" data beyond pixel values of self.height * self.width * 4
@@ -128,19 +164,18 @@ class MAMEEnv(gym.Env):
         return observation
 
     def _send_action(self, action, player=1):
-        # Map action to MAME input commands
-        P1_ACTIONS = [ "P1_LEFT", "P1_RIGHT", "P1_BUTTON1", "P1_LEFT P1_BUTTON1", "P1_RIGHT P1_BUTTON1", ""]
-        P2_ACTIONS = [ "P2_LEFT", "P2_RIGHT", "P2_BUTTON1", "P2_LEFT P2_BUTTON1", "P2_RIGHT P2_BUTTON1", ""]
-        actions = P1_ACTIONS if player == 1 else P2_ACTIONS
-        mame_action = actions[action]
-        if mame_action: self._send_input(mame_action)
+        
+        # Convert action index to port and field
+        port, field = self._action_to_input(action)
+        mask = self.inputs[port][field]
+        
+        # Send input to MAME 
+        # TODO better to feed it in each frame on the Lua side, per @mjstudy.lua
+        press_code = f"manager.machine.ioport.ports['{port}']:port.fields['{field}']:set_value(1)"
+        unpress_code = f"manager.machine.ioport.ports['{port}']:port.fields['{field}']:set_value(0)"
+        self.mame.execute(press_code)
+        self.mame.execute(unpress_code)
 
-    
-    # Memory addresses for Joust
-    LIVES_ADDR = {1: 0xA052, 2: 0xA05C}
-    SCORE_ADDR = {1: 0xA04C, 2: 0xA058}
-    MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
-    
     def _read_byte(self, address):
         result = self.mame.execute(f"return manager.machine.devices[':maincpu'].spaces['program']:read_u8(0x{address:X})")
         return int(result.decode())
@@ -181,10 +216,53 @@ class MAMEEnv(gym.Env):
         current_lives = self._get_lives(player)
         return current_lives == 0  # Game is over when player has no lives left
 
+    def _get_mame_inputs(self):
+        # utility function to get game inputs may be useful for arbitraty MAME roms 
+        lua_script = """
+        function serialize(obj)
+            local items = {}
+            for k, v in pairs(obj) do
+                if type(v) == "table" then
+                    items[#items+1] = string.format("%q:{%s}", k, serialize(v))
+                else
+                    items[#items+1] = string.format("%q:%q", k, tostring(v))
+                end
+            end
+            return "{" .. table.concat(items, ",") .. "}"
+        end
+
+        function get_inputs()
+            local inputs = {}
+            for port_name, port in pairs(manager.machine.ioport.ports) do
+                inputs[port_name] = {}
+                for field_name, field in pairs(port.fields) do
+                    inputs[port_name][field_name] = field.mask
+                end
+            end
+            return serialize(inputs)
+        end
+
+        return get_inputs()
+        """
+        result = self.mame.execute(lua_script)
+
+        # Parse the JSON string into a Python dictionary and return
+        input_dict = json.loads(result.decode())
+        return input_dict
+
+    def _action_to_input(self, action):
+        count = 0
+        for port_name, fields in self.inputs.items():
+            for field_name in fields:
+                if count == action:
+                    return port_name, field_name
+                count += 1
+        raise ValueError(f"Invalid action: {action}")
+
 
 # Example usage
 if __name__ == "__main__":
-    env = MAMEEnv(game='joust', render_mode='rgb_array')
+    env = JoustEnv()
 
     observation, info = env.reset()
 
