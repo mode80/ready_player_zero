@@ -13,7 +13,7 @@ This project provides a Gymnasium-compatible environment for the MAME (Multiple 
 1. Ensure you have MAME installed on your system.
 2. Place `mame_server.lua` in a location accessible to MAME.
 3. Install the required Python packages:
-    pip install gymnasium numpy matplotlib
+    pip install gymnasium numpy 
 
 
 ## Usage
@@ -58,9 +58,15 @@ env.close()
 - Ensure that the MAME server is running before attempting to connect with the Python environment.
 
 ## Future Improvements
-- Normalize observation space to [0, 1] range
 - Implement support for multiple MAME games
-- Enhance reward function and done conditions
+- Explore a more performant communication method between MAME and Python
+- Try/enable a more sophisticated reward function
+- Implement an actual RL agent to demonstrate usage
+
+## Acknowledgements
+
+- Credit to M.J. Murray's [MAMEToolkit](https://github.com/M-J-Murray/MAMEToolkit) implementation for inspiration. 
+- Goals here are compatibility with the latest [MAME](https://github.com/mamedev/mame) release and to support a standard [Gym](https://gymnasium.farama.org/) interface.
 
 ## Contributing
 Contributions to improve the environment or add support for more games are welcome. Please submit a pull request or open an issue for discussion.

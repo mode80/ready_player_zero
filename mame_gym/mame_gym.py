@@ -2,8 +2,7 @@ from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from mame_client import MAMEClient
-import matplotlib.pyplot as plt # type:ignore
+from .mame_client import MAMEClient
 import json
 
 class JoustEnv(gym.Env):
@@ -98,7 +97,7 @@ class JoustEnv(gym.Env):
         self.mame.close()
 
     def _init_command_queue(self):
-        # preps the MAME client session to enable issuing a sequence of commands over successive frames 
+        # preps the MAME client session to enable issuing a sequence of Lua instructions over successive frames 
         self.mame.execute(r"""
             commands = '' -- persistant global string takes semicolon-delimited Lua code for execution in turn each frame 
             cmdQ = {} 
@@ -124,8 +123,7 @@ class JoustEnv(gym.Env):
     def _queue_command(self, command):
         # Adds semi-colon delimited Lua code to the command queue for execution one frame at a time 
         self.mame.execute(f"""
-            if string.len(commands)>0 commands = commands .. ';' end
-            command = command .. {command}
+            commands = commands .. '{command}' .. ';'
         """)
 
     def _ready_up(self):
