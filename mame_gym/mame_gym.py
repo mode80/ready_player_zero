@@ -4,6 +4,7 @@ from gymnasium import spaces
 import numpy as np
 from .mame_client import MAMEClient
 import json
+from textwrap import dedent
 
 class JoustEnv(gym.Env):
 
@@ -18,17 +19,12 @@ class JoustEnv(gym.Env):
     WIDTH=292
     HEIGHT=240
 
-    # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
-    observation_space = spaces.Box(low=0, high=255, shape=(HEIGHT, WIDTH, 3), dtype=np.uint8) 
 
-
-    def __init__(self, ):
-
+    def __init__(self, mame_client=None):
         super().__init__()
 
-        self.mame = MAMEClient()
-
         # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
+        self.mame = MAMEClient()
         self.mame.connect()
 
         # Gather input info for this rom
@@ -49,13 +45,13 @@ class JoustEnv(gym.Env):
 
         # Define action space based on available inputs
         # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
-        action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
+        self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
+
+        # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
+        self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
 
         self.render_mode = None 
         self.reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
-
-        # Make sure the game is prepped from the start 
-        self.reset()
 
 
     def step(self, action):
@@ -98,7 +94,7 @@ class JoustEnv(gym.Env):
 
     def _init_command_queue(self):
         # preps the MAME client session to enable issuing a sequence of Lua instructions over successive frames 
-        self.mame.execute(r"""
+        self.mame.execute( dedent(r"""
             commands = '' -- persistant global string takes semicolon-delimited Lua code for execution in turn each frame 
             cmdQ = {} 
             process_commands_sub = emu.add_machine_frame_notifier(
@@ -118,7 +114,7 @@ class JoustEnv(gym.Env):
                     end
                 end
             )
-        """)
+        """))
 
     def _queue_command(self, command):
         # Adds semi-colon delimited Lua code to the command queue for execution one frame at a time 
@@ -134,10 +130,10 @@ class JoustEnv(gym.Env):
 
     def _press_button(self, button):
         # takes a button name e.g. "COIN1" and presses it
-        self._queue_command(f"""
+        self._queue_command( dedent(f"""
             manager.machine.input.port_by_tag('{button}').fields['{button}'].set_value(1)");
             manager.machine.input.port_by_tag('{button}').fields['{button}'].set_value(0)")
-        """)
+        """))
 
     def _pause(self):
         self.mame.execute("emu.pause()")
@@ -175,11 +171,11 @@ class JoustEnv(gym.Env):
 
     def _get_observation(self):
         pixels = self._get_pixels()
-        # trim any "footer" data beyond pixel values of self.height * self.width * 4
-        pixels = pixels[:self.HEIGHT * self.WIDTH * 4]
+        # trim any "footer" data beyond pixel values of JoustEnv.HEIGHT * JoustEnv.WIDTH * 4
+        pixels = pixels[:JoustEnv.HEIGHT * JoustEnv.WIDTH * 4]
         # unflatten bytes into row,col,channel format; keep all rows and cols, but transform 'ABGR' to RGB  
-        observation = np.frombuffer(pixels[:self.HEIGHT * self.WIDTH * 4], 
-                                    dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1]
+        observation = np.frombuffer(pixels[:JoustEnv.HEIGHT * JoustEnv.WIDTH * 4], 
+                                    dtype=np.uint8).reshape((JoustEnv.HEIGHT, JoustEnv.WIDTH, 4))[:,:,2::-1]
         return observation
 
     def _send_action(self, action, player=1):
@@ -223,7 +219,7 @@ class JoustEnv(gym.Env):
         self.last_lives[player] = current_lives
         
         # Reward for score increase
-        reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
+        reward = score_diff / JoustEnv.MAX_SCORE_DIFF  # Normalize score difference
         
         # Penalty for losing lives
         if lives_diff < 0:
@@ -237,7 +233,7 @@ class JoustEnv(gym.Env):
 
     def _get_mame_inputs(self):
         # utility function to get game inputs may be useful for arbitraty MAME roms 
-        lua_script = """
+        lua_script = dedent("""
         function serialize(obj)
             local items = {}
             for k, v in pairs(obj) do
@@ -262,7 +258,7 @@ class JoustEnv(gym.Env):
         end
 
         return get_inputs()
-        """
+        """)
         result = self.mame.execute(lua_script)
 
         # Parse the JSON string into a Python dictionary and return
