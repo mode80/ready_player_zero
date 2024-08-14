@@ -31,29 +31,30 @@ class MAMEClient:
 
 
 def main():
+
     blurb = """
-Connects to a MAME that's running the 'mame_server.lua' script, allowing you to send Lua commands remotely.
-For available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
+    Connects to a MAME that's running the 'mame_server.lua' script, allowing you to send Lua commands remotely.
+    For available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
 
-Example:
+    Example:
 
-    % ./mame joust -window -autoboot_script ~/mamegym/mame_server.lua 
-    MAME listening on 127.0.0.1:1942
+        % ./mame joust -window -autoboot_script ~/mamegym/mame_server.lua 
+        MAME listening on 127.0.0.1:1942
 
-    % python ~/mamegym/mame_client.py 
-    Connected to 127.0.0.1:1942
+        % python ~/mamegym/mame_client.py 
+        Connected to 127.0.0.1:1942
 
-    > emu.pause()
-    b'OK'
+        > emu.pause()
+        b'OK'
 
-    > a=1; b=2
-    b'OK'
+        > a=1; b=2
+        b'OK'
 
-    > return a+b
-    b'3'
+        > return a+b
+        b'3'
 
-    > quit
-"""
+        > quit
+    """
 
     # Set up command line argument parsing
     parser = argparse.ArgumentParser( 

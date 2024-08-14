@@ -16,11 +16,11 @@ class JoustEnv(gym.Env):
 
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
 
-    width=292
-    height=240
+    WIDTH=292
+    HEIGHT=240
 
     # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
-    observation_space = spaces.Box(low=0, high=255, shape=(height, width, 3), dtype=np.uint8) 
+    observation_space = spaces.Box(low=0, high=255, shape=(HEIGHT, WIDTH, 3), dtype=np.uint8) 
 
 
     def __init__(self, ):
@@ -32,48 +32,32 @@ class JoustEnv(gym.Env):
         # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
         self.mame.connect()
 
-        # Gatther input info for this rom
+        # Gather input info for this rom
         # self.inputs = self._get_mame_inputs() 
         self.inputs = {
-            ":IN0":{
-                "1 Player Start":32,
-                "2 Players Start":16
-            },
-            ":INP2": {
-                "P2 Button 1":4,
-                "P2 Left":1,
-                "P2 Right":2
-            },
+            ":IN0":{ "1 Player Start":32, "2 Players Start":16 },
+            ":INP2": { "P2 Button 1":4, "P2 Left":1, "P2 Right":2 },
             ":INP1A":[],
             ":INP2A":[],
-            ":INP1":{
-                "P1 Button 1":4,
-                "P1 Right":2,
-                "P1 Left":1
-            },
+            ":INP1":{ "P1 Button 1":4, "P1 Right":2, "P1 Left":1 },
             ":IN2":{
-                "Auto Up / Manual Down":1,
-                "Coin 2":32,
-                "Advance":2,
-                "Coin 1":16,
-                "High Score Reset":8,
-                "Coin 3":4,
-                "Tilt":64
+                "Auto Up / Manual Down":1, "Coin 2":32,
+                "Advance":2, "Coin 1":16, "High Score Reset":8,
+                "Coin 3":4, "Tilt":64
             },
             ":IN1":[]
         }
 
-        # Define action and observation space
-        # action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
-
         # Define action space based on available inputs
-        self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
+        # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
+        action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
+
+        self.render_mode = None 
+        self.reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
 
         # Make sure the game is prepped from the start 
         self.reset()
 
-        self.render_mode = None 
-        self.reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
 
     def step(self, action):
         
@@ -88,18 +72,17 @@ class JoustEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        # reset the mame emulation
+        # actions reset the mame emulation
         self._soft_reset()
+        self._ready_up() # actions to start the game
         self._pause()
         self._throttled_off()
         
-        # initialize last score and lives for both players
+        # re-cache last score and lives for both players
         self.last_score = {1: 0, 2: 0}
         self.last_lives = {1: 3, 2: 3}
         
-        self._get_ready_to_play()
 
-        # get initial observation
         observation = self._get_observation()
 
         info = {}
@@ -114,11 +97,49 @@ class JoustEnv(gym.Env):
     def close(self):
         self.mame.close()
 
-    def _get_ready_to_play(self):
+    def _init_command_queue(self):
+        # preps the MAME client session to enable issuing a sequence of commands over successive frames 
+        self.mame.execute(r"""
+            commands = '' -- persistant global string takes semicolon-delimited Lua code for execution in turn each frame 
+            cmdQ = {} 
+            process_commands_sub = emu.add_machine_frame_notifier(
+                function()
+                    if (string.len(commands) > 0) then -- Check global commands string for new commands
+                        for cmd in string.gmatch(commands, '[^;]+') do  -- Split command string by ';' and iterate over each part
+                            if string.len(cmd) > 0 then  -- If the command is not empty
+                                cmdFn = loadstring(cmd);  -- Create a function for the command 
+                                table.insert(cmdQ, cmdFn);  -- Add it the quene for execution
+                            end
+                        end
+                        commands = ''  -- Clear the commands string for the next frame
+                    end
+                    if #cmdQ > 0 then  -- If there are commands in the queue
+                        cmdQ[1]();  -- Execute the next command function in the queue 
+                        table.remove(cmdQ,1);  -- remove the function from the table after executing it
+                    end
+                end
+            )
+        """)
+
+    def _queue_command(self, command):
+        # Adds semi-colon delimited Lua code to the command queue for execution one frame at a time 
+        self.mame.execute(f"""
+            if string.len(commands)>0 commands = commands .. ';' end
+            command = command .. {command}
+        """)
+
+    def _ready_up(self):
         # Insert a coin
-        self.mame.execute("manager.machine.input.port_by_tag('COIN1').fields['COIN1'].set_value(1)")
+        self._press_button("COIN1")
         # Press start button
-        self.mame.execute("manager.machine.input.port_by_tag('START').fields['START'].set_value(1)")
+        self._press_button("START")
+
+    def _press_button(self, button):
+        # takes a button name e.g. "COIN1" and presses it
+        self._queue_command(f"""
+            manager.machine.input.port_by_tag('{button}').fields['{button}'].set_value(1)");
+            manager.machine.input.port_by_tag('{button}').fields['{button}'].set_value(0)")
+        """)
 
     def _pause(self):
         self.mame.execute("emu.pause()")
@@ -157,10 +178,10 @@ class JoustEnv(gym.Env):
     def _get_observation(self):
         pixels = self._get_pixels()
         # trim any "footer" data beyond pixel values of self.height * self.width * 4
-        pixels = pixels[:self.height * self.width * 4]
+        pixels = pixels[:self.HEIGHT * self.WIDTH * 4]
         # unflatten bytes into row,col,channel format; keep all rows and cols, but transform 'ABGR' to RGB  
-        observation = np.frombuffer(pixels[:self.height * self.width * 4], 
-                                    dtype=np.uint8).reshape((self.height, self.width, 4))[:,:,2::-1]
+        observation = np.frombuffer(pixels[:self.HEIGHT * self.WIDTH * 4], 
+                                    dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1]
         return observation
 
     def _send_action(self, action, player=1):

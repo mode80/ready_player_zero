@@ -48,6 +48,5 @@ local function runs_per_frame()
     end
 end
 
-
 listen_for_client()
-emu.register_frame_done(runs_per_frame)
+server_frame_sub = emu.add_machine_frame_notifier(runs_per_frame)
