@@ -5,28 +5,27 @@ class MAMEClient:
     def __init__(self, host='127.0.0.1', port=1942):
         self.host = host
         self.port = port
-        self.sock = None
+        self.sock = None  
 
     def connect(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.connect((self.host, self.port))
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Create TCP socket
+        self.sock.connect((self.host, self.port))  # Establish connection to MAME
         print(f"Connected to {self.host}:{self.port}")
 
     def close(self):
         if self.sock:
-            self.sock.close()
+            self.sock.close()  # Close the socket if it exists
             print("Closing Client connection")
 
     def execute(self, lua_code):
-        self.sock.sendall(lua_code.encode() + b'\n')  # Add newline as a delimiter
+        self.sock.sendall(lua_code.encode() + b'\n')  # Send Lua code with newline delimiter
         response = b''
-        while b'\n' not in response:
-            chunk = self.sock.recv(4096)
+        while b'\n' not in response:  # Loop until newline is received
+            chunk = self.sock.recv(4096)  # Receive data in chunks
             if not chunk:
                 raise ConnectionError("Connection closed while receiving data")
             response += chunk
-        #  trim the newline "end of transimission" character
-        return response[:-1]
+        return response[:-1]  # Return response without the trailing newline
 
 
 
@@ -100,7 +99,6 @@ def sample_usage():
     # Get current frame number
     result = mame.execute("s=manager.machine.screens[':screen']; return s:frame_number()")
     print(f"Current frame: {result}")
-
     # Step frame
     result = mame.execute("emu.step()")
     print(f"Stepped: {result}")

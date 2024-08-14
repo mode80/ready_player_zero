@@ -61,7 +61,7 @@ env.close()
 - Implement support for multiple MAME games
 - Explore a more performant communication method between MAME and Python
 - Try/enable a more sophisticated reward function
-- Implement an actual RL agent to demonstrate usage
+- Implement an actual [RL agent](https://stable-baselines.readthedocs.io/en/master/) to demonstrate usage
 
 ## Acknowledgements
 
