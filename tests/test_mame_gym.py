@@ -45,10 +45,6 @@ def test_helper_methods():
     width, height = env._get_screen_size()
     assert width == JoustEnv.WIDTH and height == JoustEnv.HEIGHT, "Incorrect screen size"
 
-    # Test _get_pixels_bytes
-    pixels_bytes = env._get_pixels_bytes()
-    assert pixels_bytes == JoustEnv.WIDTH * JoustEnv.HEIGHT * 4, "Incorrect pixels bytes"
-
     # Test _get_frame_number
     frame_number = env._get_frame_number()
     assert isinstance(frame_number, int), "Frame number is not an integer"

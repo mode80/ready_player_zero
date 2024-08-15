@@ -19,6 +19,14 @@ class JoustEnv(gym.Env):
     WIDTH=292
     HEIGHT=240
 
+    COIN1 = (":IN2", "Coin 1")
+    COIN2 = (":IN2", "Coin 2")
+    P1_START = (":IN0", "1 Player Start")
+    P2_START = (":IN0", "2 Players Start")
+    P1_LEFT = (":INP1", "P1 Left")
+    P1_RIGHT = (":INP1", "P1 Right")
+    P1_UP = (":INP1", "P1 Button 1")
+
 
     def __init__(self, mame_client=None):
         super().__init__()
@@ -28,7 +36,7 @@ class JoustEnv(gym.Env):
         self.mame.connect()
 
         # Gather input info for this rom
-        # self.inputs = self._get_mame_inputs() 
+        # self.inputs = self._get_rom_inputs() 
         self.inputs = {
             ":IN0":{ "1 Player Start":32, "2 Players Start":16 },
             ":INP2": { "P2 Button 1":4, "P2 Left":1, "P2 Right":2 },
@@ -69,6 +77,8 @@ class JoustEnv(gym.Env):
         
         # actions reset the mame emulation
         self._soft_reset()
+        sleep(8) # wait for game to boot up 
+        self._init_command_queue() # kicks off player input loop on the Lua side
         self._ready_up() # actions to start the game
         self._pause()
         self._throttled_off()
@@ -102,7 +112,7 @@ class JoustEnv(gym.Env):
                     if (string.len(commands) > 0) then -- Check global commands string for new commands
                         for cmd in string.gmatch(commands, '[^;]+') do  -- Split command string by ';' and iterate over each part
                             if string.len(cmd) > 0 then  -- If the command is not empty
-                                cmdFn = loadstring(cmd);  -- Create a function for the command 
+                                cmdFn = load(cmd);  -- Create a function for the command 
                                 table.insert(cmdQ, cmdFn);  -- Add it the quene for execution
                             end
                         end
@@ -118,49 +128,54 @@ class JoustEnv(gym.Env):
 
     def _queue_command(self, command):
         # Adds semi-colon delimited Lua code to the command queue for execution one frame at a time 
-        self.mame.execute(f"""
+        self.mame.execute( dedent(f"""
             commands = commands .. '{command}' .. ';'
-        """)
+        """))
 
     def _ready_up(self):
         # Insert a coin
-        self._press_button("COIN1")
+        self._send_input(JoustEnv.COIN1) # Joust specific
         # Press start button
-        self._press_button("START")
+        self._send_input(JoustEnv.P1_START) # Joust specific
 
-    def _press_button(self, button):
-        # takes a button name e.g. "COIN1" and presses it
+    def _send_input(self, port_field):
+        # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
+        # these are rom specific and can be found with _get_inputs() 
+        port = port_field[0]
+        field = port_field[1]
         self._queue_command( dedent(f"""
-            manager.machine.input.port_by_tag('{button}').fields['{button}'].set_value(1)");
-            manager.machine.input.port_by_tag('{button}').fields['{button}'].set_value(0)")
+            manager.machine.ioport.ports['{port}'].fields['{field}'].set_value(1);
+            manager.machine.ioport.ports['{port}'].fields['{field}'].set_value(0);
         """))
 
     def _pause(self):
-        self.mame.execute("emu.pause()")
+        ret = self.mame.execute("emu.pause()")
+        if ret != b'OK': raise RuntimeError(ret)
 
     def _unpause(self):
-        self.mame.execute("emu.unpause()")
+        ret = self.mame.execute("emu.unpause()")
+        if ret != b'OK': raise RuntimeError(ret)
 
     def _throttled_on(self):
-        self.mame.execute("manager.machine.video.throttled = true")
+        ret = self.mame.execute("manager.machine.video.throttled = true")
+        if ret != b'OK': raise RuntimeError(ret)
 
     def _throttled_off(self):
-        self.mame.execute("manager.machine.video.throttled = false")
+        ret = self.mame.execute("manager.machine.video.throttled = false")
+        if ret != b'OK': raise RuntimeError(ret)
 
     def _step(self):
-        self.mame.execute("emu.step()")
+        ret = self.mame.execute("emu.step()")
+        if ret != b'OK': raise RuntimeError(ret)
 
     def _soft_reset(self):
-        self.mame.execute("manager.machine.soft_reset()")
+        ret = self.mame.execute("return manager.machine:soft_reset()")
+        if ret != b'OK': raise RuntimeError(ret)
 
     def _get_screen_size(self):
         result = self.mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height")
         width, height = map(int, result.decode().split('x'))
         return width, height
-
-    def _get_pixels_bytes(self):
-        result = self.mame.execute("s=manager.machine.screens[':screen']; return #s:pixels()")
-        return int(result.decode())
 
     def _get_frame_number(self):
         result = self.mame.execute("s=manager.machine.screens[':screen']; return s:frame_number()")
@@ -231,8 +246,8 @@ class JoustEnv(gym.Env):
         current_lives = self._get_lives(player)
         return current_lives == 0  # Game is over when player has no lives left
 
-    def _get_mame_inputs(self):
-        # utility function to get game inputs may be useful for arbitraty MAME roms 
+    def _get_rom_inputs(self):
+        # utility fn to get all available "port" and "field" input codes for arbitraty MAME roms 
         lua_script = dedent("""
         function serialize(obj)
             local items = {}
