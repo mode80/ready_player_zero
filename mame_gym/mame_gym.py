@@ -27,6 +27,9 @@ class JoustEnv(gym.Env):
     P1_RIGHT = (":INP1", "P1 Right")
     P1_UP = (":INP1", "P1 Button 1")
 
+    FPS = 60
+    BOOT_SECONDS = 8
+
 
     def __init__(self, mame_client=None):
         super().__init__()
@@ -53,7 +56,9 @@ class JoustEnv(gym.Env):
 
         # Define action space based on available inputs
         # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
-        self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
+        # self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
+        self.action_space = spaces.Discrete(4)  # Left, Right, Flap, No-op
+        self.actions = [JoustEnv.P1_LEFT, JoustEnv.P1_RIGHT, JoustEnv.P1_UP, None] # Joust specific
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
         self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
@@ -77,8 +82,7 @@ class JoustEnv(gym.Env):
         
         # actions reset the mame emulation
         self._soft_reset()
-        sleep(8) # wait for game to boot up 
-        self._init_command_queue() # kicks off player input loop on the Lua side
+        sleep(JoustEnv.BOOT_SECONDS) # wait for game to boot up 
         self._ready_up() # actions to start the game
         self._pause()
         self._throttled_off()
@@ -87,7 +91,6 @@ class JoustEnv(gym.Env):
         self.last_score = {1: 0, 2: 0}
         self.last_lives = {1: 3, 2: 3}
         
-
         observation = self._get_observation()
 
         info = {}
@@ -102,51 +105,50 @@ class JoustEnv(gym.Env):
     def close(self):
         self.mame.close()
 
-    def _init_command_queue(self):
-        # preps the MAME client session to enable issuing a sequence of Lua instructions over successive frames 
-        self.mame.execute( dedent(r"""
-            commands = '' -- persistant global string takes semicolon-delimited Lua code for execution in turn each frame 
-            cmdQ = {} 
-            process_commands_sub = emu.add_machine_frame_notifier(
-                function()
-                    if (string.len(commands) > 0) then -- Check global commands string for new commands
-                        for cmd in string.gmatch(commands, '[^;]+') do  -- Split command string by ';' and iterate over each part
-                            if string.len(cmd) > 0 then  -- If the command is not empty
-                                cmdFn = load(cmd);  -- Create a function for the command 
-                                table.insert(cmdQ, cmdFn);  -- Add it the quene for execution
-                            end
-                        end
-                        commands = ''  -- Clear the commands string for the next frame
-                    end
-                    if #cmdQ > 0 then  -- If there are commands in the queue
-                        cmdQ[1]();  -- Execute the next command function in the queue 
-                        table.remove(cmdQ,1);  -- remove the function from the table after executing it
-                    end
-                end
-            )
-        """))
-
-    def _queue_command(self, command):
-        # Adds semi-colon delimited Lua code to the command queue for execution one frame at a time 
-        self.mame.execute( dedent(f"""
-            commands = commands .. '{command}' .. ';'
-        """))
+    # def _queue_command(self, command):
+    #     # Adds semi-colon delimited Lua code to the command queue for execution one frame at a time 
+    #     self.mame.execute( dedent(f"""
+    #         commands = commands .. '{command}' .. ';'
+    #     """))
 
     def _ready_up(self):
         # Insert a coin
         self._send_input(JoustEnv.COIN1) # Joust specific
+        # TODO second input won't work due to "if not running withint _send_input"
         # Press start button
         self._send_input(JoustEnv.P1_START) # Joust specific
+
+    def _wait_frames(n):
+        # wait timespan of n frames
+        sleep(n/JoustEnv.FPS) 
 
     def _send_input(self, port_field):
         # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
         # these are rom specific and can be found with _get_inputs() 
         port = port_field[0]
         field = port_field[1]
-        self._queue_command( dedent(f"""
-            manager.machine.ioport.ports['{port}'].fields['{field}'].set_value(1);
-            manager.machine.ioport.ports['{port}'].fields['{field}'].set_value(0);
+        # TODO : better way?
+        self.mame.execute( dedent(f""" 
+            sub=emu.add_machine_frame_notifier( function()
+                if not running then
+                    running=true
+                    print( manager.machine.screens[':screen']:frame_number()) 
+                    manager.machine.ioport.ports['{port}'].fields['{field}']:set_value(1)
+                    emu.wait_next_frame() -- seems to need 2 frames between
+                    emu.wait_next_frame() 
+                    print( manager.machine.screens[':screen']:frame_number()) 
+                    manager.machine.ioport.ports['{port}'].fields['{field}']:set_value(0)
+                    sub:unsubscribe()
+                    running=false
+                end
+            end)
         """))
+
+    def _send_action(self, action):
+        # takes a Gym action index and simulates that user input
+        action_input = self.actions[action]
+        if action_input is not None:
+            self._send_input(self.actions[action])
 
     def _pause(self):
         ret = self.mame.execute("emu.pause()")
@@ -173,6 +175,7 @@ class JoustEnv(gym.Env):
         if ret != b'OK': raise RuntimeError(ret)
 
     def _get_screen_size(self):
+        # TODO can't count ':screen' always being the key for every rom
         result = self.mame.execute("s=manager.machine.screens[':screen']; return s.width .. 'x' .. s.height")
         width, height = map(int, result.decode().split('x'))
         return width, height
@@ -192,19 +195,6 @@ class JoustEnv(gym.Env):
         observation = np.frombuffer(pixels[:JoustEnv.HEIGHT * JoustEnv.WIDTH * 4], 
                                     dtype=np.uint8).reshape((JoustEnv.HEIGHT, JoustEnv.WIDTH, 4))[:,:,2::-1]
         return observation
-
-    def _send_action(self, action, player=1):
-        
-        # Convert action index to port and field
-        port, field = self._action_to_input(action)
-        mask = self.inputs[port][field]
-        
-        # Send input to MAME 
-        # TODO better to feed it in each frame on the Lua side, per @mjstudy.lua
-        press_code = f"manager.machine.ioport.ports['{port}']:port.fields['{field}']:set_value(1)"
-        unpress_code = f"manager.machine.ioport.ports['{port}']:port.fields['{field}']:set_value(0)"
-        self.mame.execute(press_code)
-        self.mame.execute(unpress_code)
 
     def _read_byte(self, address):
         result = self.mame.execute(f"return manager.machine.devices[':maincpu'].spaces['program']:read_u8(0x{address:X})")
@@ -246,48 +236,79 @@ class JoustEnv(gym.Env):
         current_lives = self._get_lives(player)
         return current_lives == 0  # Game is over when player has no lives left
 
-    def _get_rom_inputs(self):
-        # utility fn to get all available "port" and "field" input codes for arbitraty MAME roms 
-        lua_script = dedent("""
-        function serialize(obj)
-            local items = {}
-            for k, v in pairs(obj) do
-                if type(v) == "table" then
-                    items[#items+1] = string.format("%q:{%s}", k, serialize(v))
-                else
-                    items[#items+1] = string.format("%q:%q", k, tostring(v))
-                end
-            end
-            return "{" .. table.concat(items, ",") .. "}"
-        end
+    # def _init_command_queue(self):
+    #     # preps the MAME client session to enable issuing a sequence of Lua instructions over successive frames 
+    #     self.mame.execute( dedent(r"""
+    #         commands = '' -- persistant global string takes semicolon-delimited Lua code for execution in turn each frame 
+    #         errors = '' -- persistant global string holds semicolon-delimited error messages from Lua code execution
+    #         cmdQ = {} 
+    #         process_commands_sub = emu.add_machine_frame_notifier(
+    #             function()
+    #                 if (string.len(commands) > 0) then -- Check global commands string for new commands
+    #                     for cmd in string.gmatch(commands, '[^;]+') do  -- Split command string by ';' and iterate over each part
+    #                         if string.len(cmd) > 0 then  -- If the command is not empty
+    #                             cmdFn = load(cmd);  -- Create a function for the command 
+    #                             table.insert(cmdQ, cmdFn);  -- Add it the quene for execution
+    #                         end
+    #                     end
+    #                     commands = ''  -- Clear the commands string for the next frame
+    #                     errors = '' -- Clear errors 
+    #                 end
+    #                 if #cmdQ > 0 then  -- If there are commands in the queue
+    #                     local success, error_msg = pcall(cmdQ[1])  -- Execute the next command function in the queue with error checking
+    #                     if not success then
+    #                         errors = errors .. error_msg .. ';'  -- Add error message to errors string
+    #                         cmdQ={} -- Clear the command queue after error
+    #                     end
+    #                     table.remove(cmdQ,1);  -- remove the function from the table after executing it
+    #                 end
+    #             end
+    #         )
+    #     """))
 
-        function get_inputs()
-            local inputs = {}
-            for port_name, port in pairs(manager.machine.ioport.ports) do
-                inputs[port_name] = {}
-                for field_name, field in pairs(port.fields) do
-                    inputs[port_name][field_name] = field.mask
-                end
-            end
-            return serialize(inputs)
-        end
 
-        return get_inputs()
-        """)
-        result = self.mame.execute(lua_script)
+    # def _get_rom_inputs(self):
+    #     # utility fn to get all available "port" and "field" input codes for arbitraty MAME roms 
+    #     lua_script = dedent("""
+    #     function serialize(obj)
+    #         local items = {}
+    #         for k, v in pairs(obj) do
+    #             if type(v) == "table" then
+    #                 items[#items+1] = string.format("%q:{%s}", k, serialize(v))
+    #             else
+    #                 items[#items+1] = string.format("%q:%q", k, tostring(v))
+    #             end
+    #         end
+    #         return "{" .. table.concat(items, ",") .. "}"
+    #     end
 
-        # Parse the JSON string into a Python dictionary and return
-        input_dict = json.loads(result.decode())
-        return input_dict
+    #     function get_inputs()
+    #         local inputs = {}
+    #         for port_name, port in pairs(manager.machine.ioport.ports) do
+    #             inputs[port_name] = {}
+    #             for field_name, field in pairs(port.fields) do
+    #                 inputs[port_name][field_name] = field.mask
+    #             end
+    #         end
+    #         return serialize(inputs)
+    #     end
 
-    def _action_to_input(self, action):
-        count = 0
-        for port_name, fields in self.inputs.items():
-            for field_name in fields:
-                if count == action:
-                    return port_name, field_name
-                count += 1
-        raise ValueError(f"Invalid action: {action}")
+    #     return get_inputs()
+    #     """)
+    #     result = self.mame.execute(lua_script)
+
+    #     # Parse the JSON string into a Python dictionary and return
+    #     input_dict = json.loads(result.decode())
+    #     return input_dict
+
+    # def _action_to_input(self, action):
+    #     count = 0
+    #     for port_name, fields in self.inputs.items():
+    #         for field_name in fields:
+    #             if count == action:
+    #                 return port_name, field_name
+    #             count += 1
+    #     raise ValueError(f"Invalid action: {action}")
 
 
 # Example usage

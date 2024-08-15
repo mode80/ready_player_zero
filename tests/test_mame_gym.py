@@ -11,7 +11,7 @@ def test_joust_env():
     env = JoustEnv()
     assert env.mame is not None, "MAME client not initialized"
     assert env.observation_space.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation space"
-    assert env.action_space.n == 6, "Incorrect action space"
+    assert env.action_space.n == 4, "Incorrect action space"
 
     # Test reset
     observation, info = env.reset()
