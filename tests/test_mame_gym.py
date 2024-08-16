@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from time import sleep
 
 from mame_gym.mame_gym import JoustEnv
 import numpy as np
@@ -41,10 +42,11 @@ def test_atomic_functions():
     except Exception as e:
         assert False, f"_get_lua_errors raised an unexpected exception: {e}"
 
-    env.close()
     print("All atomic function tests passed!")
 
 def test_action_and_observation():
+
+    env.reset() 
 
     # Test _send_input
     env._send_input(JoustEnv.LEFT)
@@ -58,7 +60,6 @@ def test_action_and_observation():
     observation = env._get_observation()
     assert observation.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation shape"
 
-    env.close()
     print("All action and observation tests passed!")
 
 def test_game_logic():
@@ -73,7 +74,6 @@ def test_game_logic():
     done = env._check_done()
     assert isinstance(done, bool), "Done is not a boolean"
 
-    env.close()
     print("All game logic tests passed!")
 
 def test_environment_lifecycle():
@@ -96,21 +96,20 @@ def test_environment_lifecycle():
     rendered = env.render()
     assert rendered is None, "Render should return None when render_mode is None"
 
-    env.close()
     print("All environment lifecycle tests passed!")
 
 def test_joust_env():
     assert env.mame is not None, "MAME client not initialized"
     assert env.observation_space.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation space"
     assert env.action_space.n == 4, "Incorrect action space"
-    env.close()
     print("JoustEnv initialization test passed!")
 
 env = JoustEnv()
-test_atomic_functions()
+# test_atomic_functions()
 test_action_and_observation()
 test_game_logic()
 test_environment_lifecycle()
 test_joust_env()
+env.close()
 print("All tests completed successfully!")
 

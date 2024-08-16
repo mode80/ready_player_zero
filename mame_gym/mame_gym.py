@@ -12,7 +12,7 @@ class JoustEnv(gym.Env):
 
     PLAYER = 1 # 1 or 2
     FPS = 60
-    BOOT_SECONDS = 8
+    BOOT_SECONDS = 13 
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
 
     WIDTH=292
@@ -51,19 +51,19 @@ class JoustEnv(gym.Env):
 
         # Gather input info for this rom
         # self.inputs = self._get_rom_inputs() 
-        self.inputs = {
-            ":IN0":{ "1 Player Start":32, "2 Players Start":16 },
-            ":INP2": { "P2 Button 1":4, "P2 Left":1, "P2 Right":2 },
-            ":INP1A":[],
-            ":INP2A":[],
-            ":INP1":{ "P1 Button 1":4, "P1 Right":2, "P1 Left":1 },
-            ":IN2":{
-                "Auto Up / Manual Down":1, "Coin 2":32,
-                "Advance":2, "Coin 1":16, "High Score Reset":8,
-                "Coin 3":4, "Tilt":64
-            },
-            ":IN1":[]
-        }
+        # self.inputs = {
+        #     ":IN0":{ "1 Player Start":32, "2 Players Start":16 },
+        #     ":INP2": { "P2 Button 1":4, "P2 Left":1, "P2 Right":2 },
+        #     ":INP1A":[],
+        #     ":INP2A":[],
+        #     ":INP1":{ "P1 Button 1":4, "P1 Right":2, "P1 Left":1 },
+        #     ":IN2":{
+        #         "Auto Up / Manual Down":1, "Coin 2":32,
+        #         "Advance":2, "Coin 1":16, "High Score Reset":8,
+        #         "Coin 3":4, "Tilt":64
+        #     },
+        #     ":IN1":[]
+        # }
 
         # Define action space based on available inputs
         # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
@@ -96,6 +96,7 @@ class JoustEnv(gym.Env):
         # actions to reset the mame emulation
         self._soft_reset()
         sleep(JoustEnv.BOOT_SECONDS) # wait for game to boot up 
+        self.__init__() # required to reconnect the client etc after a MAME soft_reset
         self._ready_up() # actions to start the game
         while self._commands_are_processing(): pass # wait for game to start
         self._pause()
@@ -123,9 +124,7 @@ class JoustEnv(gym.Env):
 
     def _queue_command(self, command):
         # adds a line (or many semi-colon delimited lines) of Lua code to a queue for execution over future frames
-        self.mame.execute( dedent(f"""
-            commands = commands .. '{command}' .. ';'
-        """))
+        self.mame.execute(f"commands=commands..'{command}'..';' ")
 
     def _ready_up(self):
         # Insert a coin

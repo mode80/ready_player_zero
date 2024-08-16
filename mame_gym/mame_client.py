@@ -13,11 +13,13 @@ class MAMEClient:
         print(f"Connected to {self.host}:{self.port}")
 
     def close(self):
-        if self.sock:
-            self.sock.close()  # Close the socket if it exists
-            print("Closing Client connection")
+        if not self.sock: raise ConnectionError("Not connected to MAME")
+        self.sock.close()  # Close the socket if it exists
+        self.sock = None
+        print("Closing Client connection")
 
     def execute(self, lua_code):
+        if not self.sock: raise ConnectionError("Not connected to MAME")
         self.sock.sendall(lua_code.encode() + b'\n')  # Send Lua code with newline delimiter
         response = b''
         while b'\n' not in response:  # Loop until newline is received
