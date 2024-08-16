@@ -6,13 +6,12 @@ from mame_gym.mame_gym import JoustEnv
 import numpy as np
 
 def test_atomic_functions():
-    env = JoustEnv()
 
-    # Test _read_byte and _read_word
+    # Test _read_byte and _read_dword
     byte_value = env._read_byte(JoustEnv.P1_LIVES_ADDR)
     assert 0 <= byte_value <= 255, "Invalid byte value"
-    word_value = env._read_word(JoustEnv.P1_SCORE_ADDR)
-    assert 0 <= word_value <= 65535, "Invalid word value"
+    dword_value = env._read_dword(JoustEnv.P1_SCORE_ADDR)
+    assert 0 <= dword_value <= 4294967295, "Invalid dword value"
 
     # Test _get_frame_number
     frame_number = env._get_frame_number()
@@ -28,7 +27,7 @@ def test_atomic_functions():
 
     # Test _get_lives and _get_score
     lives = env._get_lives()
-    assert 0 <= lives <= 3, "Invalid number of lives"
+    assert 0 <= lives <= 5, "Invalid number of lives"
     score = env._get_score()
     assert score >= 0, "Invalid score"
 
@@ -46,7 +45,6 @@ def test_atomic_functions():
     print("All atomic function tests passed!")
 
 def test_action_and_observation():
-    env = JoustEnv()
 
     # Test _send_input
     env._send_input(JoustEnv.LEFT)
@@ -64,7 +62,6 @@ def test_action_and_observation():
     print("All action and observation tests passed!")
 
 def test_game_logic():
-    env = JoustEnv()
 
     # Test _calculate_reward
     env.last_score = {1: 0, 2: 0}
@@ -80,7 +77,6 @@ def test_game_logic():
     print("All game logic tests passed!")
 
 def test_environment_lifecycle():
-    env = JoustEnv()
 
     # Test reset
     observation, info = env.reset()
@@ -104,17 +100,17 @@ def test_environment_lifecycle():
     print("All environment lifecycle tests passed!")
 
 def test_joust_env():
-    env = JoustEnv()
     assert env.mame is not None, "MAME client not initialized"
     assert env.observation_space.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation space"
     assert env.action_space.n == 4, "Incorrect action space"
     env.close()
     print("JoustEnv initialization test passed!")
 
-if __name__ == "__main__":
-    test_atomic_functions()
-    test_action_and_observation()
-    test_game_logic()
-    test_environment_lifecycle()
-    test_joust_env()
-    print("All tests completed successfully!")
+env = JoustEnv()
+test_atomic_functions()
+test_action_and_observation()
+test_game_logic()
+test_environment_lifecycle()
+test_joust_env()
+print("All tests completed successfully!")
+

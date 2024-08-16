@@ -218,9 +218,9 @@ class JoustEnv(gym.Env):
 
     def _get_score(self):
         if JoustEnv.PLAYER==2:
-            return self._read_dword(self.P2_SCORE_ADDR)
+            return JoustEnv._bcd_to_int( self._read_dword(self.P2_SCORE_ADDR) )
         else: 
-            return self._read_dword(self.P1_SCORE_ADDR)
+            return JoustEnv._bcd_to_int( self._read_dword(self.P1_SCORE_ADDR) )
 
     def _calculate_reward(self):
         # Get current score and lives
@@ -290,6 +290,12 @@ class JoustEnv(gym.Env):
         # check for past errors in the Lua code execution
         result = self.mame.execute("return errors")
         if result != b'': raise Exception(result.decode())
+
+    def _bcd_to_int(bcd_value):
+        # Convert BCD (Binary Coded Decimal) to a decimal int
+        # Old MAME roms often store numbers in memory as BCD
+        # BCD amounts to "the hex formated number, read as decimal (after the 0x part)"
+        return int(hex(bcd_value)[2:])
 
     # def _get_rom_inputs(self):
     #     # utility fn to get all available "port" and "field" input codes for arbitraty MAME roms 
