@@ -1,3 +1,4 @@
+# %%
 from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
@@ -43,7 +44,7 @@ class JoustEnv(gym.Env):
         super().__init__()
 
         # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
-        self.mame = MAMEClient()
+        self.mame = mame_client or MAMEClient()
         self.mame.connect()
 
         self._init_lua_globals()
@@ -142,10 +143,10 @@ class JoustEnv(gym.Env):
         # this action is async in the sense that the inputs may be processed after this function returns
         port = port_field[0]
         field = port_field[1]
-        self._queue_command( dedent(f"""
-            ioports['{port}'].fields['{field}']:set_value(1);
-            ioports['{port}'].fields['{field}']:set_value(0)
-        """))
+        self._queue_command((
+            "ioports['{port}'].fields['{field}']:set_value(1); "
+            "ioports['{port}'].fields['{field}']:set_value(0) "
+        ))
 
     def _commands_are_processing(self):
         # returns true if there are commands in the queue that have not been processed
@@ -198,11 +199,15 @@ class JoustEnv(gym.Env):
         return observation
 
     def _read_byte(self, address):
-        result = self.mame.execute(f"mem:read_u8(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.mame.execute(f"return mem:read_u8(0x{address:X})") # depends on _init_lua_globals for 'mem'
         return int(result.decode())
 
     def _read_word(self, address):
-        result = self.mame.execute(f"mem:read_u16(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.mame.execute(f"return mem:read_u16(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        return int(result.decode())
+
+    def _read_dword(self, address):
+        result = self.mame.execute(f"return mem:read_u32(0x{address:X})") # depends on _init_lua_globals for 'mem'
         return int(result.decode())
 
     def _get_lives(self):
@@ -213,9 +218,9 @@ class JoustEnv(gym.Env):
 
     def _get_score(self):
         if JoustEnv.PLAYER==2:
-            return self._read_word(self.P2_SCORE_ADDR)
+            return self._read_dword(self.P2_SCORE_ADDR)
         else: 
-            return self._read_word(self.P1_SCORE_ADDR)
+            return self._read_dword(self.P1_SCORE_ADDR)
 
     def _calculate_reward(self):
         # Get current score and lives
@@ -245,38 +250,37 @@ class JoustEnv(gym.Env):
 
     def _init_lua_globals(self):
         # set some persistant global variables in the MAME client session for later use
-        self.mame.execute( dedent(r"""
-            screen = manager.machine.screens[":screen"] or manager.machine.screens:at(1) -- reference to the screen device
-            ioports = manager.machine.ioport.port -- reference to the ioports device
-            mem = manager.machine.devices[':maincpu'].spaces['program'] -- reference to the maincpu program space
-            commands = '' -- persistant global string takes semicolon-delimited Lua code for execution over successive frames 
-            errors = '' -- holds semicolon-delimited error messages from Lua code execution
-            last_result = nil -- holds the result of the last Lua code execution when executed over frames
-            cmdQ = {} 
-
-            -- below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
-            process_commands_sub = emu.add_machine_frame_notifier( function()
-                if screen:frame_number() % 2 == 0 then -- some commands need this extra frame between
-                    if (string.len(commands) > 0) then -- Check global commands string for new commands
-                        for cmd in string.gmatch(commands, '[^;]+') do  -- Split command string by ';' and iterate over each part
-                            if string.len(cmd) > 0 then  -- If the command is not empty
-                                cmdFn = load(cmd);  -- Create a function for the command 
-                                table.insert(cmdQ, cmdFn);  -- Add it the queue for execution
-                            end
-                        end
-                        commands = ''  -- Clear the commands string for the next frame
-                    end
-                    if #cmdQ > 0 then  -- If there are commands in the queue
-                        success, last_result = pcall(cmdQ[1])  -- Execute the next command function in the queue with error checking
-                        if not success then
-                            errors = errors .. last_result .. ';'  -- Add error message to errors string
-                            cmdQ={} -- Clear the command queue after error
-                        end
-                        table.remove(cmdQ,1);  -- remove the function from the table after executing it
-                    end
-                end
-            )
-        """))
+        self.mame.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
+            "screen = manager.machine.screens[':screen'] or manager.machine.screens:at(1) ; " # reference to the screen device
+            "ioports = manager.machine.ioport.port ; " # reference to the ioports device
+            "mem = manager.machine.devices[':maincpu'].spaces['program'] ; " # reference to the maincpu program space
+            "commands = '' ; " #persistant global string takes semicolon-delimited Lua code for execution over successive frames 
+            "errors = '' ; " #holds semicolon-delimited error messages from Lua code execution
+            "last_result = nil ; " #holds the result of the last Lua code execution when executed over frames
+            "cmdQ = {} ; "
+            #below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
+            "process_commands_sub = emu.add_machine_frame_notifier( "
+                "function() "
+                    "if (string.len(commands) > 0) then "#Check global commands string for new commands
+                        "for cmd in string.gmatch(commands, '[^;]+') do " #Split command string by ';' and iterate over each part
+                            "if string.len(cmd) > 0 then  "#If the command is not empty
+                                "cmdFn = load(cmd) ; "#Create a function for the command 
+                                "table.insert(cmdQ, cmdFn); "#Add it the queue for execution
+                            "end "
+                        "end "
+                        "commands = '' ; " #Clear the commands string for the next frame
+                    "end "
+                    "if #cmdQ>0 and screen:frame_number()%2==0 then "#If queue has commands and 2 frames have passed (some need this)
+                        "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
+                        "if not success then "
+                            "errors = errors..last_result..';'  ; "#Add error message to errors string
+                            "cmdQ={} ; " #Clear the command queue after error
+                        "end "
+                        "table.remove(cmdQ,1) ; " #remove the function from the table after executing it
+                    "end "
+                "end "
+            ") "
+        ))
 
     def _get_lua_last_result(self):
         # return result of the last frame-queued command on the Lua side 
