@@ -3,7 +3,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from time import sleep
 
-from mame_gym.mame_gym import JoustEnv
+from ready_player_zero import JoustEnv
 import numpy as np
 
 def test_atomic_functions():
@@ -99,13 +99,13 @@ def test_environment_lifecycle():
     print("All environment lifecycle tests passed!")
 
 def test_joust_env():
-    assert env.mame is not None, "MAME client not initialized"
+    assert env.client is not None, "MAME client not initialized"
     assert env.observation_space.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation space"
     assert env.action_space.n == 4, "Incorrect action space"
     print("JoustEnv initialization test passed!")
 
 env = JoustEnv()
-# test_atomic_functions()
+test_atomic_functions()
 test_action_and_observation()
 test_game_logic()
 test_environment_lifecycle()

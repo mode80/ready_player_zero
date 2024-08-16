@@ -3,16 +3,19 @@ from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-from .mame_client import MAMEClient
-import json
-from textwrap import dedent
+from mame_client import MAMEClient
+# import json
+# from textwrap import dedent
 # from matplotlib import pyplot as plt
 
 class JoustEnv(gym.Env):
 
     PLAYER = 1 # 1 or 2
     FPS = 60
-    BOOT_SECONDS = 13 
+    BOOT_SECONDS = 11 # Number of seconds after reboot before game can receive input 
+    BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
+    INPUT_DELAY = 1/FPS
+    TRAIN_UNTHROTTLED = True # If True, game runs at full speed.
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
 
     WIDTH=292
@@ -42,28 +45,7 @@ class JoustEnv(gym.Env):
 
     def __init__(self, mame_client=None):
         super().__init__()
-
-        # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
-        self.mame = mame_client or MAMEClient()
-        self.mame.connect()
-
-        self._init_lua_globals()
-
-        # Gather input info for this rom
-        # self.inputs = self._get_rom_inputs() 
-        # self.inputs = {
-        #     ":IN0":{ "1 Player Start":32, "2 Players Start":16 },
-        #     ":INP2": { "P2 Button 1":4, "P2 Left":1, "P2 Right":2 },
-        #     ":INP1A":[],
-        #     ":INP2A":[],
-        #     ":INP1":{ "P1 Button 1":4, "P1 Right":2, "P1 Left":1 },
-        #     ":IN2":{
-        #         "Auto Up / Manual Down":1, "Coin 2":32,
-        #         "Advance":2, "Coin 1":16, "High Score Reset":8,
-        #         "Coin 3":4, "Tilt":64
-        #     },
-        #     ":IN1":[]
-        # }
+        self.client = mame_client or MAMEClient()
 
         # Define action space based on available inputs
         # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
@@ -77,12 +59,37 @@ class JoustEnv(gym.Env):
         self.render_mode = None 
         self.reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
 
+        # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
+        self.client.connect() 
+        self._init_lua_globals()
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        
+        self._throttled_off()
+        self._reboot()
+        sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot -- can't be based on state because connection for reading state is lost after reboot  
+        self.client.connect() # reconnect after reboot
+        self._init_lua_globals()
+        if self.TRAIN_UNTHROTTLED == False: self._throttled_on()
+        self._ready_up() # actions to start the game
+        # self._pause()
+
+        # re-cache last score and lives 
+        self.last_score = self._get_score() 
+        self.last_lives = self._get_lives()
+               
+        observation = self._get_observation()
+
+        info = {}
+        return observation, info
 
     def step(self, action):
         
         action = self.actions[action]
         if action is not None:
             self._send_input(action)
+        # self._unpause()
         self._step_frame()
         observation = self._get_observation()
         reward = self._calculate_reward()
@@ -90,26 +97,6 @@ class JoustEnv(gym.Env):
         info = {}
         return observation, reward, done, False, info
 
-    def reset(self, seed=None, options=None):
-        super().reset(seed=seed)
-        
-        # actions to reset the mame emulation
-        self._soft_reset()
-        sleep(JoustEnv.BOOT_SECONDS) # wait for game to boot up 
-        self.__init__() # required to reconnect the client etc after a MAME soft_reset
-        self._ready_up() # actions to start the game
-        while self._commands_are_processing(): pass # wait for game to start
-        self._pause()
-        self._throttled_off()
-        
-        # re-cache last score and lives for both players
-        self.last_score = {1: 0, 2: 0}
-        self.last_lives = {1: self._get_lives(), 2: 3}
-        
-        observation = self._get_observation()
-
-        info = {}
-        return observation, info
 
     def render(self):
         if self.render_mode == 'rgb_array':
@@ -120,23 +107,31 @@ class JoustEnv(gym.Env):
             raise NotImplementedError(f"Render mode {self.render_mode} is not supported.")
 
     def close(self):
-        self.mame.close()
+        self.client.close()
 
     def _queue_command(self, command):
         # adds a line (or many semi-colon delimited lines) of Lua code to a queue for execution over future frames
-        self.mame.execute(f"commands=commands..'{command}'..';' ")
+        self.client.execute(f"commands=commands..'{command}'..';' ")
 
     def _ready_up(self):
-        # Insert a coin
-        self._send_input(JoustEnv.COIN1) # Joust specific
-        # Press start button
-        self._send_input(JoustEnv.START) # Joust specific
-
-    def _wait_frames(n):
-        # wait timespan of n frames
-        sleep(n/JoustEnv.FPS) 
+        self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
+        self._send_input(JoustEnv.START) # press Start # Joust specific
+        while self._get_lives() == 0 or self._get_score()!=0 : 
+            sleep(JoustEnv.INPUT_DELAY)# wait for play to start
+        # self._wait_n_frames(2)
+        # while self._commands_are_processing(): pass # wait for play to start
 
     def _send_input(self, port_field):
+        # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input
+        # these are rom specific and can be found with _get_inputs()
+        # this action is async in the sense that the inputs may be processed after this function returns
+        port = port_field[0]
+        field = port_field[1]
+        self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(1); ")
+        sleep(JoustEnv.INPUT_DELAY)
+        self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
+
+    def _queue_input(self, port_field):
         # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
         # these are rom specific and can be found with _get_inputs() 
         # this action is async in the sense that the inputs may be processed after this function returns
@@ -149,44 +144,51 @@ class JoustEnv(gym.Env):
 
     def _commands_are_processing(self):
         # returns true if there are commands in the queue that have not been processed
-        ret = self.mame.execute("return #cmdQ > 0")
+        ret = self.client.execute("return #cmdQ > 0")
         return ret == b'true'
 
     def _pause(self):
-        ret = self.mame.execute("emu.pause()")
+        ret = self.client.execute("emu.pause()")
         if ret != b'OK': raise RuntimeError(ret)
 
     def _unpause(self):
-        ret = self.mame.execute("emu.unpause()")
+        ret = self.client.execute("emu.unpause()")
         if ret != b'OK': raise RuntimeError(ret)
 
+    def _wait_n_frames(self, n):
+        # wait timespan of n frames
+        init_frame_num = self._get_frame_number()
+        end_frame_num = init_frame_num + n
+        while self._get_frame_number() < end_frame_num:
+            pass
+
     def _throttled_on(self):
-        ret = self.mame.execute("manager.machine.video.throttled = true")
+        ret = self.client.execute("manager.machine.video.throttled = true")
         if ret != b'OK': raise RuntimeError(ret)
 
     def _throttled_off(self):
-        ret = self.mame.execute("manager.machine.video.throttled = false")
+        ret = self.client.execute("manager.machine.video.throttled = false")
         if ret != b'OK': raise RuntimeError(ret)
 
     def _step_frame(self):
-        ret = self.mame.execute("emu.step()")
+        ret = self.client.execute("emu.step()")
         if ret != b'OK': raise RuntimeError(ret)
 
-    def _soft_reset(self):
-        ret = self.mame.execute("return manager.machine:soft_reset()")
+    def _reboot(self):
+        ret = self.client.execute("return manager.machine:soft_reset()")
         if ret != b'OK': raise RuntimeError(ret)
 
     def _get_screen_size(self):
-        result = self.mame.execute("return screen.width .. 'x' .. screen.height") # depends on _init_lua_globals for 'screen'
+        result = self.client.execute("return screen.width .. 'x' .. screen.height") # depends on _init_lua_globals for 'screen'
         width, height = map(int, result.decode().split('x'))
         return width, height
 
     def _get_frame_number(self):
-        result = self.mame.execute("return screen:frame_number()") # depends on _init_lua_globals for 'screen'
+        result = self.client.execute("return screen:frame_number()") # depends on _init_lua_globals for 'screen'
         return int(result.decode())
 
     def _get_pixels(self):
-        return self.mame.execute("return screen:pixels()") # depends on _init_lua_globals for 'screen'
+        return self.client.execute("return screen:pixels()") # depends on _init_lua_globals for 'screen'
 
     def _get_observation(self):
         pixels = self._get_pixels()
@@ -198,15 +200,15 @@ class JoustEnv(gym.Env):
         return observation
 
     def _read_byte(self, address):
-        result = self.mame.execute(f"return mem:read_u8(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.client.execute(f"return mem:read_u8(0x{address:X})") # depends on _init_lua_globals for 'mem'
         return int(result.decode())
 
     def _read_word(self, address):
-        result = self.mame.execute(f"return mem:read_u16(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.client.execute(f"return mem:read_u16(0x{address:X})") # depends on _init_lua_globals for 'mem'
         return int(result.decode())
 
     def _read_dword(self, address):
-        result = self.mame.execute(f"return mem:read_u32(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.client.execute(f"return mem:read_u32(0x{address:X})") # depends on _init_lua_globals for 'mem'
         return int(result.decode())
 
     def _get_lives(self):
@@ -227,12 +229,12 @@ class JoustEnv(gym.Env):
         current_lives = self._get_lives()
         
         # Calculate score,lives differences
-        score_diff = current_score - self.last_score[JoustEnv.PLAYER]
-        lives_diff = current_lives - self.last_lives[JoustEnv.PLAYER]
+        score_diff = current_score - self.last_score
+        lives_diff = current_lives - self.last_lives
         
         # Update last score and lives
-        self.last_score[JoustEnv.PLAYER] = current_score
-        self.last_lives[JoustEnv.PLAYER] = current_lives
+        self.last_score = current_score
+        self.last_lives = current_lives
         
         # Reward for score increase
         reward = score_diff / JoustEnv.MAX_SCORE_DIFF  # Normalize score difference
@@ -249,9 +251,9 @@ class JoustEnv(gym.Env):
 
     def _init_lua_globals(self):
         # set some persistant global variables in the MAME client session for later use
-        self.mame.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
+        self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
             "screen = manager.machine.screens[':screen'] or manager.machine.screens:at(1) ; " # reference to the screen device
-            "ioports = manager.machine.ioport.port ; " # reference to the ioports device
+            "ioports = manager.machine.ioport.ports ; " # reference to the ioports device
             "mem = manager.machine.devices[':maincpu'].spaces['program'] ; " # reference to the maincpu program space
             "commands = '' ; " #persistant global string takes semicolon-delimited Lua code for execution over successive frames 
             "errors = '' ; " #holds semicolon-delimited error messages from Lua code execution
@@ -283,11 +285,11 @@ class JoustEnv(gym.Env):
 
     def _get_lua_last_result(self):
         # return result of the last frame-queued command on the Lua side 
-        return self.mame.execute("return last_result")
+        return self.client.execute("return last_result")
 
     def _get_lua_errors(self):
         # check for past errors in the Lua code execution
-        result = self.mame.execute("return errors")
+        result = self.client.execute("return errors")
         if result != b'': raise Exception(result.decode())
 
     def _bcd_to_int(bcd_value):

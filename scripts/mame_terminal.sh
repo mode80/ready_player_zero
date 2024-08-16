@@ -11,4 +11,4 @@ end tell
 EOF
 
 # Wait for MAME to start (adjust the sleep time if needed)
-sleep 13 
+sleep 12 

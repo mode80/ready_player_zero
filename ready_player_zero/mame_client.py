@@ -8,12 +8,13 @@ class MAMEClient:
         self.sock = None  
 
     def connect(self):
+        if self.sock: self.close() # Close existing connection if any
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Create TCP socket
         self.sock.connect((self.host, self.port))  # Establish connection to MAME
         print(f"Connected to {self.host}:{self.port}")
 
     def close(self):
-        if not self.sock: raise ConnectionError("Not connected to MAME")
+        if not self.sock: return  # Do nothing if not connected
         self.sock.close()  # Close the socket if it exists
         self.sock = None
         print("Closing Client connection")

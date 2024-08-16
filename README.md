@@ -1,4 +1,4 @@
-# MAME Gym Environment
+# Ready Player Zero 
 
 This project provides a Gymnasium-compatible environment for the MAME (Multiple Arcade Machine Emulator) game Joust. It allows reinforcement learning agents to interact with the game through a Python interface.
 
@@ -42,16 +42,16 @@ env.close()
 
 ## Environment Details
 - Observation Space: Box(0, 255, (240, 292, 3), uint8)
-- Action Space: Discrete(6) (Left, Right, Flap, Left+Flap, Right+Flap, No-op)
+- Action Space: Discrete(6) (Left, Right, Flap, No-op)
 - Reward: Based on score increase and life loss
 - Done: When the player loses all lives
 
 ## Features
+- Implements a simple protocol for control of MAME over TCP/IP
 - Supports pausing, unpausing, and stepping through frames
 - Allows reading game memory for score and lives
 - Provides RGB observations of the game screen
 - Implements a basic reward function based on score and lives
-
 
 ## Notes
 - The environment is currently set up for the game Joust, but can be adapted for other MAME-supported games.
@@ -65,8 +65,8 @@ env.close()
 
 ## Acknowledgements
 
-- Credit to M.J. Murray's [MAMEToolkit](https://github.com/M-J-Murray/MAMEToolkit) implementation for inspiration. 
-- Goals here are compatibility with the latest [MAME](https://github.com/mamedev/mame) release and to support a standard [Gym](https://gymnasium.farama.org/) interface.
+- Credit to M.J. Murray's [MAMEToolkit](https://github.com/M-J-Murray/MAMEToolkit) for inspiration. 
+- Goals here are compatibility with the latest unmodified [MAME](https://github.com/mamedev/mame) release and to support a standard [Gym](https://gymnasium.farama.org/) interface.
 
 ## Contributing
 Contributions to improve the environment or add support for more games are welcome. Please submit a pull request or open an issue for discussion.
