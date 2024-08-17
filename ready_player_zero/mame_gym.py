@@ -16,6 +16,7 @@ class JoustEnv(gym.Env):
     BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
     INPUT_DELAY = 1/FPS
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
+    FRAMES_TO_READY_UP = 150
 
     WIDTH=292
     HEIGHT=240
@@ -61,15 +62,16 @@ class JoustEnv(gym.Env):
         # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
         self.client.connect() 
         self._init_lua_globals()
+        self.is_paused = False
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
         self._throttled_off()
-        self._reboot()
+        self._soft_reset()
         sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot -- can't be based on state because connection for reading state is lost after reboot  
         self.client.connect() # reconnect after reboot
-        self._init_lua_globals()
+        # self._init_lua_globals() # turns out a _soft_reset() does not clear previous globals so we shouldn't do this again here 
         # self._throttled_on()
         self._ready_up() # actions to start the game
         # self._pause()
@@ -89,9 +91,10 @@ class JoustEnv(gym.Env):
         print(command) # TODO remove debug print
         if command is not None:
             self._queue_input(command)
+        else:
+            self._queue_command('') # no-op to preserve consistent timing 
         for i in range(2):  # watching Joust indicates actions are not observable until the _th frame after input
-            self._unpause() # if we don't unpause input doesn't process (TODO: uncomfortably unpredictable time unpaused due to IO) 
-            self._step_frame() 
+            self._unpause_step_frame()
             # self._queue_command("emu.unpause();emu.step();")
         observation = self._get_observation()
         lives = self._get_lives()
@@ -120,25 +123,34 @@ class JoustEnv(gym.Env):
         self.client.execute(f"commands=commands..\"{command}\" ")
 
     def _ready_up(self):
-        sleep(.1) # :/ 
-        self._queue_input(JoustEnv.COIN1) # insert a coin # Joust specific
-        sleep(.1) # why need this ?? :/
-        self._queue_input(JoustEnv.START) # press Start # Joust specific
+        self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
+        self._send_input(JoustEnv.START) # press Start # Joust specific
         # while self._get_lives() == 0 or self._get_score()!=0 : 
         #     sleep(JoustEnv.INPUT_DELAY)# wait for play to start
-        # self._wait_n_frames(2)
+        self._wait_n_frames(JoustEnv.FRAMES_TO_READY_UP)  
         # while self._commands_are_processing(): pass # wait for play to start
 
+    def _unpause_step_frame(self):
+        # a paused game doesn't process input. so this convenience fn unshackles the game for a moment, then repauses
+        self._unpause() # if we don't unpause input doesn't process (TODO: unpredictable time unpaused due to IO?) 
+        self._step_frame() 
+
     def _send_input(self, port_field):
-        # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input
-        # these are rom specific and can be found with _get_inputs()
-        # this action is async in the sense that the inputs may be processed after this function returns
-        port = port_field[0]
-        field = port_field[1]
-        self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(1); ")
-        sleep(JoustEnv.INPUT_DELAY) # needs some delay betweeen input commands :/ 
-        self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
-        sleep(JoustEnv.INPUT_DELAY)
+        # queues up a single input command and processes it by unpausing briefly if necessary 
+        # for more fine-grained control, use _queue_input and _flush_input separately
+        self._queue_input(port_field)
+        if self.is_paused: self._unpause_step_frame()
+
+    # def _send_input(self, port_field):
+    #     # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input
+    #     # these are rom specific and can be found with _get_inputs()
+    #     # this action is async in the sense that the inputs may be processed after this function returns
+    #     port = port_field[0]
+    #     field = port_field[1]
+    #     self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(1); ")
+    #     sleep(JoustEnv.INPUT_DELAY) # needs some delay betweeen input commands :/ 
+    #     self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
+    #     sleep(JoustEnv.INPUT_DELAY)
 
     def _queue_input(self, port_field):
         # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
@@ -158,14 +170,14 @@ class JoustEnv(gym.Env):
         return ret == b'true'
 
     def _pause(self):
-        self.is_paused = True
         ret = self.client.execute("emu.pause()")
         if ret != b'OK': raise RuntimeError(ret)
+        self.is_paused = True
 
     def _unpause(self):
-        self.is_paused = False 
         ret = self.client.execute("emu.unpause()")
         if ret != b'OK': raise RuntimeError(ret)
+        self.is_paused = False 
 
     def _wait_n_frames(self, n):
         # wait timespan of n frames
@@ -185,8 +197,9 @@ class JoustEnv(gym.Env):
     def _step_frame(self):
         ret = self.client.execute("emu.step()")
         if ret != b'OK': raise RuntimeError(ret)
+        self.is_paused = True
 
-    def _reboot(self):
+    def _soft_reset(self):
         ret = self.client.execute("return manager.machine:soft_reset()")
         if ret != b'OK': raise RuntimeError(ret)
 
@@ -273,6 +286,7 @@ class JoustEnv(gym.Env):
             "last_result = nil ; " #holds the result of the last Lua code execution when executed over frames
             "cmdQ = {} ; "
             "last_frame = 0 ; "
+            "if process_commands_sub then process_commands_sub:unsubscribe() end ; " #remove any existing frame notifier
             #below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
             "process_commands_sub = emu.add_machine_frame_notifier( "
                 "function() "
@@ -286,7 +300,9 @@ class JoustEnv(gym.Env):
                         "commands = '' ; " #Clear the commands string for the next frame
                     "end "
                     "frame_num = screen:frame_number() ; " #Get the current frame number
-                    "if #cmdQ>0 and (frame_num-last_frame)>=2 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
+                    "frame_diff = frame_num - last_frame ; " # useful difference in frames since the last command execution
+                    "if #cmdQ>0 and frame_diff>=2 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
+                        "print('#cmdQ: '..#cmdQ..' frame_num: '..frame_num..' diff: '..frame_diff) ; "
                         "last_frame = frame_num ; "
                         "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
                         "if not success then "
@@ -380,9 +396,9 @@ if __name__ == "__main__":
 
     for _ in range(1000):
         # action = env.action_space.sample()  # Random action
-        action = [0,0,0,0,0,2,0,0,0,0,0,3][_ % 12]  
+        action = [0,0,0,3,0,0,0,2][_ % 8]  
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.4)
+        sleep(.1)
         
         if done or truncated:
             observation, info = env.reset()
