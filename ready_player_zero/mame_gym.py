@@ -50,7 +50,7 @@ class JoustEnv(gym.Env):
         # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
         # self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
         self.action_space = spaces.Discrete(4)  # Left, Right, Flap, No-op
-        self.actions = [JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.UP, None] # Joust specific
+        self.actions = [None, JoustEnv.UP, JoustEnv.LEFT, JoustEnv.RIGHT] # Joust specific
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
         self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
@@ -87,13 +87,11 @@ class JoustEnv(gym.Env):
         
         command = self.actions[action]
         print(command) # TODO remove debug print
-        # self._throttled_off()
-        self._unpause()
-        # self._step_frame()
+        self._unpause() # inputs don't process while paused :/  # TODO fuse this with _queue_input to avoid variability of extra IPC call
         if command is not None:
             self._queue_input(command)
-        self._step_frame()
-        # self._pause()
+        for i in range(1):  # watching Joust indicates actions are not observable until the _th frame after input
+            self._step_frame() # also pauses 
         observation = self._get_observation()
         lives = self._get_lives()
         score = self._get_score()
@@ -123,7 +121,7 @@ class JoustEnv(gym.Env):
     def _ready_up(self):
         sleep(.1) # :/ 
         self._queue_input(JoustEnv.COIN1) # insert a coin # Joust specific
-        sleep(.1) # why need this ?? :(
+        sleep(.1) # why need this ?? :/
         self._queue_input(JoustEnv.START) # press Start # Joust specific
         # while self._get_lives() == 0 or self._get_score()!=0 : 
         #     sleep(JoustEnv.INPUT_DELAY)# wait for play to start
@@ -136,12 +134,10 @@ class JoustEnv(gym.Env):
         # this action is async in the sense that the inputs may be processed after this function returns
         port = port_field[0]
         field = port_field[1]
-        # self._unpause() # inputs don't process while paused :/ 
         self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(1); ")
-        sleep(JoustEnv.INPUT_DELAY) # needs 2? frames/seconds of delay betweeen input commands
+        sleep(JoustEnv.INPUT_DELAY) # needs some delay betweeen input commands :/ 
         self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
         sleep(JoustEnv.INPUT_DELAY)
-        # self._pause()
 
     def _queue_input(self, port_field):
         # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
@@ -240,8 +236,8 @@ class JoustEnv(gym.Env):
 
     def _calculate_reward(self, score=None, lives=None):
         # Get current score and lives
-        current_score = score or self._get_score()
-        current_lives = lives or self._get_lives()
+        current_score = score #or self._get_score() # shouldn't run _get_score but does?
+        current_lives = lives #or self._get_lives()
         
         # Calculate score,lives differences
         score_diff = current_score - self.last_score
@@ -261,8 +257,8 @@ class JoustEnv(gym.Env):
         return reward
 
     def _check_done(self, score=None, lives=None):
-        current_lives = lives or self._get_lives()
-        current_score = score or self._get_score()
+        current_lives = lives #or self._get_lives()
+        current_score = score #or self._get_score()
         return current_lives == 0 and current_score > 0 # score check here prevents false trigger at game start
 
     def _init_lua_globals(self):
@@ -275,6 +271,7 @@ class JoustEnv(gym.Env):
             "errors = '' ; " #holds semicolon-delimited error messages from Lua code execution
             "last_result = nil ; " #holds the result of the last Lua code execution when executed over frames
             "cmdQ = {} ; "
+            "last_frame = 0 ; "
             #below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
             "process_commands_sub = emu.add_machine_frame_notifier( "
                 "function() "
@@ -287,7 +284,9 @@ class JoustEnv(gym.Env):
                         "end "
                         "commands = '' ; " #Clear the commands string for the next frame
                     "end "
-                    "if #cmdQ>0 and screen:frame_number()%3==0 then "#If queue has commands and some frames have passed (some need this)
+                    "frame_num = screen:frame_number() ; " #Get the current frame number
+                    "if #cmdQ>0 and (frame_num-last_frame)>=2 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
+                        "last_frame = frame_num ; "
                         "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
                         "if not success then "
                             "errors = errors..last_result..';'  ; "#Add error message to errors string
@@ -354,30 +353,6 @@ class JoustEnv(gym.Env):
     #             count += 1
     #     raise ValueError(f"Invalid action: {action}")
 
-
-# Example usage
-if __name__ == "__main__":
-    env = JoustEnv()
-
-    observation, info = env.reset()
-
-    # # debug display the observation as an image
-    # env._unpause()
-    # sleep(6)
-    # plt.imshow( env._get_observation() )
-
-    for _ in range(1000):
-        action = env.action_space.sample()  # Random action
-        observation, reward, done, truncated, info = env.step(action)
-        
-        if done or truncated:
-            observation, info = env.reset()
-
-    env.close()
-
-    # sleep(600)
-
-
 # def sample_PPO():
 #     from stable_baselines3 import PPO
 
@@ -394,3 +369,22 @@ if __name__ == "__main__":
 #             obs, _ = env.reset()
 
 #     env.close()
+
+
+# Example usage
+if __name__ == "__main__":
+    env = JoustEnv()
+
+    observation, info = env.reset()
+
+    for _ in range(1000):
+        # action = env.action_space.sample()  # Random action
+        action = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1][_ % 20]  
+        observation, reward, done, truncated, info = env.step(action)
+        sleep(.3)
+        
+        if done or truncated:
+            observation, info = env.reset()
+
+    env.close()
+

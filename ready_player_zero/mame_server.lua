@@ -40,7 +40,7 @@ local function runs_per_frame()
             listen_for_client() -- Start listening for a new client
         else
             -- Process regular commands
-            emu.print_debug(command:gsub("\n$", "")) -- debugging output  
+            emu.print_info(command:gsub("\n$", "")) -- debugging output  
             local result = execute_lua(command) -- ! 
             if type(result) == "boolean" then result = tostring(result) end -- stringify bools
             sock:write(result .. "\n") -- Send the result back to the client
