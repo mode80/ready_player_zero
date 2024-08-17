@@ -380,7 +380,7 @@ if __name__ == "__main__":
 
     for _ in range(1000):
         # action = env.action_space.sample()  # Random action
-        action = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1][_ % 21]  
+        action = [0,0,0,0,0,2,0,0,0,0,0,3][_ % 12]  
         observation, reward, done, truncated, info = env.step(action)
         sleep(.4)
         
