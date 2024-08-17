@@ -87,11 +87,12 @@ class JoustEnv(gym.Env):
         
         command = self.actions[action]
         print(command) # TODO remove debug print
-        self._unpause() # inputs don't process while paused :/  # TODO fuse this with _queue_input to avoid variability of extra IPC call
         if command is not None:
             self._queue_input(command)
-        for i in range(1):  # watching Joust indicates actions are not observable until the _th frame after input
-            self._step_frame() # also pauses 
+        for i in range(2):  # watching Joust indicates actions are not observable until the _th frame after input
+            self._unpause() # if we don't unpause input doesn't process (TODO: uncomfortably unpredictable time unpaused due to IO) 
+            self._step_frame() 
+            # self._queue_command("emu.unpause();emu.step();")
         observation = self._get_observation()
         lives = self._get_lives()
         score = self._get_score()
@@ -379,9 +380,9 @@ if __name__ == "__main__":
 
     for _ in range(1000):
         # action = env.action_space.sample()  # Random action
-        action = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1][_ % 20]  
+        action = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1][_ % 21]  
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.3)
+        sleep(.4)
         
         if done or truncated:
             observation, info = env.reset()
