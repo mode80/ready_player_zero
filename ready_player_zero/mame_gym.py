@@ -15,7 +15,6 @@ class JoustEnv(gym.Env):
     BOOT_SECONDS = 11 # Number of seconds after reboot before game can receive input 
     BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
     INPUT_DELAY = 1/FPS
-    TRAIN_UNTHROTTLED = True # If True, game runs at full speed.
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
 
     WIDTH=292
@@ -71,7 +70,7 @@ class JoustEnv(gym.Env):
         sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot -- can't be based on state because connection for reading state is lost after reboot  
         self.client.connect() # reconnect after reboot
         self._init_lua_globals()
-        if self.TRAIN_UNTHROTTLED == False: self._throttled_on()
+        # self._throttled_on()
         self._ready_up() # actions to start the game
         # self._pause()
 
@@ -86,17 +85,22 @@ class JoustEnv(gym.Env):
 
     def step(self, action):
         
-        action = self.actions[action]
-        if action is not None:
-            self._send_input(action)
-        # self._unpause()
+        command = self.actions[action]
+        print(command) # TODO remove debug print
+        # self._throttled_off()
+        self._unpause()
+        # self._step_frame()
+        if command is not None:
+            self._queue_input(command)
         self._step_frame()
+        # self._pause()
         observation = self._get_observation()
-        reward = self._calculate_reward()
-        done = self._check_done()
+        lives = self._get_lives()
+        score = self._get_score()
+        reward = self._calculate_reward(score,lives)
+        done = self._check_done(score,lives)
         info = {}
         return observation, reward, done, False, info
-
 
     def render(self):
         if self.render_mode == 'rgb_array':
@@ -111,13 +115,18 @@ class JoustEnv(gym.Env):
 
     def _queue_command(self, command):
         # adds a line (or many semi-colon delimited lines) of Lua code to a queue for execution over future frames
-        self.client.execute(f"commands=commands..'{command}'..';' ")
+        # the mechanism here is to set a global variable in Lua, which gets split up and executed frame by frame on the Lua side 
+        # via the Lua code found in _init_lua_globabls
+        # NOTE command should be valid Lua code, and should not contain line-feeds or double-quotes 
+        self.client.execute(f"commands=commands..\"{command}\" ")
 
     def _ready_up(self):
-        self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
-        self._send_input(JoustEnv.START) # press Start # Joust specific
-        while self._get_lives() == 0 or self._get_score()!=0 : 
-            sleep(JoustEnv.INPUT_DELAY)# wait for play to start
+        sleep(.1) # :/ 
+        self._queue_input(JoustEnv.COIN1) # insert a coin # Joust specific
+        sleep(.1) # why need this ?? :(
+        self._queue_input(JoustEnv.START) # press Start # Joust specific
+        # while self._get_lives() == 0 or self._get_score()!=0 : 
+        #     sleep(JoustEnv.INPUT_DELAY)# wait for play to start
         # self._wait_n_frames(2)
         # while self._commands_are_processing(): pass # wait for play to start
 
@@ -127,9 +136,12 @@ class JoustEnv(gym.Env):
         # this action is async in the sense that the inputs may be processed after this function returns
         port = port_field[0]
         field = port_field[1]
+        # self._unpause() # inputs don't process while paused :/ 
         self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(1); ")
-        sleep(JoustEnv.INPUT_DELAY)
+        sleep(JoustEnv.INPUT_DELAY) # needs 2? frames/seconds of delay betweeen input commands
         self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
+        sleep(JoustEnv.INPUT_DELAY)
+        # self._pause()
 
     def _queue_input(self, port_field):
         # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
@@ -137,10 +149,11 @@ class JoustEnv(gym.Env):
         # this action is async in the sense that the inputs may be processed after this function returns
         port = port_field[0]
         field = port_field[1]
-        self._queue_command((
-            "ioports['{port}'].fields['{field}']:set_value(1); "
-            "ioports['{port}'].fields['{field}']:set_value(0) "
+        command = ((
+            f"ioports['{port}'].fields['{field}']:set_value(1); "
+            f"ioports['{port}'].fields['{field}']:set_value(0) "
         ))
+        self._queue_command(command)
 
     def _commands_are_processing(self):
         # returns true if there are commands in the queue that have not been processed
@@ -148,10 +161,12 @@ class JoustEnv(gym.Env):
         return ret == b'true'
 
     def _pause(self):
+        self.is_paused = True
         ret = self.client.execute("emu.pause()")
         if ret != b'OK': raise RuntimeError(ret)
 
     def _unpause(self):
+        self.is_paused = False 
         ret = self.client.execute("emu.unpause()")
         if ret != b'OK': raise RuntimeError(ret)
 
@@ -223,10 +238,10 @@ class JoustEnv(gym.Env):
         else: 
             return JoustEnv._bcd_to_int( self._read_dword(self.P1_SCORE_ADDR) )
 
-    def _calculate_reward(self):
+    def _calculate_reward(self, score=None, lives=None):
         # Get current score and lives
-        current_score = self._get_score()
-        current_lives = self._get_lives()
+        current_score = score or self._get_score()
+        current_lives = lives or self._get_lives()
         
         # Calculate score,lives differences
         score_diff = current_score - self.last_score
@@ -245,9 +260,10 @@ class JoustEnv(gym.Env):
         
         return reward
 
-    def _check_done(self):
-        current_lives = self._get_lives()
-        return current_lives == 0  # Game is over when player has no lives left
+    def _check_done(self, score=None, lives=None):
+        current_lives = lives or self._get_lives()
+        current_score = score or self._get_score()
+        return current_lives == 0 and current_score > 0 # score check here prevents false trigger at game start
 
     def _init_lua_globals(self):
         # set some persistant global variables in the MAME client session for later use
@@ -271,7 +287,7 @@ class JoustEnv(gym.Env):
                         "end "
                         "commands = '' ; " #Clear the commands string for the next frame
                     "end "
-                    "if #cmdQ>0 and screen:frame_number()%2==0 then "#If queue has commands and 2 frames have passed (some need this)
+                    "if #cmdQ>0 and screen:frame_number()%3==0 then "#If queue has commands and some frames have passed (some need this)
                         "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
                         "if not success then "
                             "errors = errors..last_result..';'  ; "#Add error message to errors string
@@ -358,6 +374,8 @@ if __name__ == "__main__":
             observation, info = env.reset()
 
     env.close()
+
+    # sleep(600)
 
 
 # def sample_PPO():

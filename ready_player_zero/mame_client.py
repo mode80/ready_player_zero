@@ -15,6 +15,7 @@ class MAMEClient:
 
     def close(self):
         if not self.sock: return  # Do nothing if not connected
+        self.sock.sendall(b'quit\n')  # Special quit command closes the server-side connection 
         self.sock.close()  # Close the socket if it exists
         self.sock = None
         print("Closing Client connection")
@@ -24,7 +25,7 @@ class MAMEClient:
         self.sock.sendall(lua_code.encode() + b'\n')  # Send Lua code with newline delimiter
         response = b''
         while b'\n' not in response:  # Loop until newline is received
-            chunk = self.sock.recv(4096)  # Receive data in chunks
+            chunk = self.sock.recv(32767)# (4096)  # Receive data in chunks
             if not chunk:
                 raise ConnectionError("Connection closed while receiving data")
             response += chunk
