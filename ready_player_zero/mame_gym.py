@@ -12,35 +12,52 @@ class JoustEnv(gym.Env):
 
     PLAYER = 1 # 1 or 2
     FPS = 60
-    BOOT_SECONDS = 11 # Number of seconds after reboot before game can receive input 
+    BOOT_SECONDS = 11 # Number of seconds after MAME reboot before client can connect 
     BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
-    INPUT_DELAY = 1/FPS
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
-    FRAMES_TO_READY_UP = 150
+    READY_UP_FRAMES = 150 # How many frames after "pressing start" before player can move
 
-    WIDTH=292
+    WIDTH=292 # screen pixel dimensions  
     HEIGHT=240
 
     # Memory addresses for Joust
+    # to find similar for other roms see https://docs.mamedev.org/debugger/cheats.html 
     P1_LIVES_ADDR = 0xA052
     P1_SCORE_ADDR = 0xA04C
     P2_LIVES_ADDR = 0xA05C
     P2_SCORE_ADDR = 0xA058
 
-    COIN1 = (":IN2", "Coin 1")
-    P1_START = (":IN0", "1 Player Start")
-    P1_LEFT = (":INP1", "P1 Left")
-    P1_RIGHT = (":INP1", "P1 Right")
-    P1_UP = (":INP1", "P1 Button 1")
-    P2_START = (":IN0", "2 Players Start")
-    P2_LEFT = (":INP2", "P2 Left")
-    P2_RIGHT = (":INP2", "P2 Right")
-    P2_UP = (":INP2", "P2 Button 1")
+    # Input Actions are a list of Input Items, each having (port, field, value, n_frames_from_now)
+    # where 'port' and 'field' are rom specific, found with _get_rom_inputs(), 
+    # 'value' is 1 or 0 (for buttons) to indicate "press down" and "release" respectively, 
+    # and 'n_frame_from_now' is how many frames to wait before applying the input (0 for right now)
+    # a list of these can simulate complex input like "press button, hold joystick up and to the left, release".
+    # the full Input Action sequence is sent & executed in the MAME Lua environment to avoid IO timing variance 
+    COIN1       = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
+
+    P1_START    = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
+    P2_START    = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 2)]
+
+    P1_LEFT     = [(':INP1', 'P1 Left',        1, 0),   (':INP1','P1 Left',        0, 2)]
+    P1_RIGHT    = [(':INP1', 'P1 Right',       1, 0),   (':INP1','P1 Right',       0, 2)]
+    P1_FLAP     = [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2)]
+    P1_FLAP_LEFT= [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2), # press Flap and Left together,
+                   (':INP1', 'P1 Left',        1, 0),   (':INP1','P1 Left',        0, 2)] # then release both in 2 frames
+    P1_FLAP_RIGHT=[(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2),
+                   (':INP1', 'P1 Right',       1, 0),   (':INP1','P1 Right',       0, 2)]  
+
+    P2_LEFT     = [(':INP2', 'P2 Left',        1, 0),   (':INP2','P2 Left',        0, 2)]
+    P2_RIGHT    = [(':INP2', 'P2 Right',       1, 0),   (':INP2','P2 Right',       0, 2)]
+    P2_FLAP     = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2)]
+    P2_FLAP_LEFT= [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2),
+                   (':INP2', 'P2 Left',        1, 0),   (':INP2','P2 Left',        0, 2)]  
+    P2_FLAP_RIGHT=[(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2),
+                   (':INP2', 'P2 Right',       1, 0),   (':INP2','P2 Right',       0, 2)]  
 
     if PLAYER == 1:
-        START, LEFT, RIGHT, UP, = P1_START, P1_LEFT, P1_RIGHT, P1_UP
+        START, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT = P1_START, P1_LEFT, P1_RIGHT, P1_FLAP, P1_FLAP_LEFT, P1_FLAP_RIGHT 
     else:
-        START, LEFT, RIGHT, UP, = P2_START, P2_LEFT, P2_RIGHT, P2_UP
+        START, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT = P2_START, P2_LEFT, P2_RIGHT, P2_FLAP, P2_FLAP_LEFT, P2_FLAP_RIGHT 
 
 
     def __init__(self, mame_client=None):
@@ -51,7 +68,7 @@ class JoustEnv(gym.Env):
         # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
         # self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
         self.action_space = spaces.Discrete(4)  # Left, Right, Flap, No-op
-        self.actions = [None, JoustEnv.UP, JoustEnv.LEFT, JoustEnv.RIGHT] # Joust specific
+        self.actions = [None, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.FLAP_LEFT, JoustEnv.FLAP_RIGHT] # Joust specific
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
         self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
@@ -61,7 +78,7 @@ class JoustEnv(gym.Env):
 
         # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
         self.client.connect() 
-        self._init_lua_globals()
+        self._init_lua()
         self.is_paused = False
 
     def reset(self, seed=None, options=None):
@@ -69,9 +86,9 @@ class JoustEnv(gym.Env):
         
         self._throttled_off()
         self._soft_reset()
-        sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot -- can't be based on state because connection for reading state is lost after reboot  
+        sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot TODO: try connecting repeately instead of sleeping
         self.client.connect() # reconnect after reboot
-        # self._init_lua_globals() # turns out a _soft_reset() does not clear previous globals so we shouldn't do this again here 
+        # self._init_lua() # turns out a _soft_reset() does not clear previous globals so we shouldn't do this again here 
         # self._throttled_on()
         self._ready_up() # actions to start the game
         # self._pause()
@@ -127,7 +144,7 @@ class JoustEnv(gym.Env):
         self._send_input(JoustEnv.START) # press Start # Joust specific
         # while self._get_lives() == 0 or self._get_score()!=0 : 
         #     sleep(JoustEnv.INPUT_DELAY)# wait for play to start
-        self._wait_n_frames(JoustEnv.FRAMES_TO_READY_UP)  
+        self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
         # while self._commands_are_processing(): pass # wait for play to start
 
     def _unpause_step_frame(self):
@@ -135,10 +152,10 @@ class JoustEnv(gym.Env):
         self._unpause() # if we don't unpause input doesn't process (TODO: unpredictable time unpaused due to IO?) 
         self._step_frame() 
 
-    def _send_input(self, port_field):
-        # queues up a single input command and processes it by unpausing briefly if necessary 
+    def _send_input(self, input_action):
+        # queues up a single input action and processes it by unpausing briefly if necessary 
         # for more fine-grained control, use _queue_input and _flush_input separately
-        self._queue_input(port_field)
+        self._queue_input(input_action)
         if self.is_paused: self._unpause_step_frame()
 
     # def _send_input(self, port_field):
@@ -152,17 +169,24 @@ class JoustEnv(gym.Env):
     #     self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
     #     sleep(JoustEnv.INPUT_DELAY)
 
-    def _queue_input(self, port_field):
-        # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
-        # these are rom specific and can be found with _get_inputs() 
-        # this action is async in the sense that the inputs may be processed after this function returns
-        port = port_field[0]
-        field = port_field[1]
-        command = ((
-            f"ioports['{port}'].fields['{field}']:set_value(1); "
-            f"ioports['{port}'].fields['{field}']:set_value(0) "
-        ))
-        self._queue_command(command)
+    def _queue_input(self, input_action):
+        # takes an input action data structure and simulates the corrsponding user input
+        # e.g. [(':IN2', 'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] # press insert coin button, release in 2 frames
+        # will run on client when it's (now or later) unpaused
+        input_action_str = str(input_action) # need string to send over to Lua
+        self.client.execute(f"inputs=\"{input_action_str}\"; ")
+
+    # def _queue_input(self, port_field):
+    #     # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
+    #     # these are rom specific and can be found with _get_inputs() 
+    #     # this action is async in the sense that the inputs may be processed after this function returns
+    #     port = port_field[0]
+    #     field = port_field[1]
+    #     command = ((
+    #         f"ioports['{port}'].fields['{field}']:set_value(1); "
+    #         f"ioports['{port}'].fields['{field}']:set_value(0) "
+    #     ))
+    #     self._queue_command(command)
 
     def _commands_are_processing(self):
         # returns true if there are commands in the queue that have not been processed
@@ -204,16 +228,16 @@ class JoustEnv(gym.Env):
         if ret != b'OK': raise RuntimeError(ret)
 
     def _get_screen_size(self):
-        result = self.client.execute("return screen.width .. 'x' .. screen.height") # depends on _init_lua_globals for 'screen'
+        result = self.client.execute("return screen.width .. 'x' .. screen.height") # depends on _init_lua for 'screen'
         width, height = map(int, result.decode().split('x'))
         return width, height
 
     def _get_frame_number(self):
-        result = self.client.execute("return screen:frame_number()") # depends on _init_lua_globals for 'screen'
+        result = self.client.execute("return screen:frame_number()") # depends on _init_lua for 'screen'
         return int(result.decode())
 
     def _get_pixels(self):
-        return self.client.execute("return screen:pixels()") # depends on _init_lua_globals for 'screen'
+        return self.client.execute("return screen:pixels()") # depends on _init_lua for 'screen'
 
     def _get_observation(self):
         pixels = self._get_pixels()
@@ -225,15 +249,15 @@ class JoustEnv(gym.Env):
         return observation
 
     def _read_byte(self, address):
-        result = self.client.execute(f"return mem:read_u8(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.client.execute(f"return mem:read_u8(0x{address:X})") # depends on _init_lua for 'mem'
         return int(result.decode())
 
     def _read_word(self, address):
-        result = self.client.execute(f"return mem:read_u16(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.client.execute(f"return mem:read_u16(0x{address:X})") # depends on _init_lua for 'mem'
         return int(result.decode())
 
     def _read_dword(self, address):
-        result = self.client.execute(f"return mem:read_u32(0x{address:X})") # depends on _init_lua_globals for 'mem'
+        result = self.client.execute(f"return mem:read_u32(0x{address:X})") # depends on _init_lua for 'mem'
         return int(result.decode())
 
     def _get_lives(self):
@@ -275,7 +299,7 @@ class JoustEnv(gym.Env):
         current_score = score #or self._get_score()
         return current_lives == 0 and current_score > 0 # score check here prevents false trigger at game start
 
-    def _init_lua_globals(self):
+    def _init_lua(self):
         # set some persistant global variables in the MAME client session for later use
         self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
             "screen = manager.machine.screens[':screen'] or manager.machine.screens:at(1) ; " # reference to the screen device
@@ -286,30 +310,63 @@ class JoustEnv(gym.Env):
             "last_result = nil ; " #holds the result of the last Lua code execution when executed over frames
             "cmdQ = {} ; "
             "last_frame = 0 ; "
-            "if process_commands_sub then process_commands_sub:unsubscribe() end ; " #remove any existing frame notifier
-            #below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
-            "process_commands_sub = emu.add_machine_frame_notifier( "
+            # "if commands_sub then commands_sub:unsubscribe() end ; " #remove any existing frame notifier for commands
+
+            # #below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
+            # "commands_sub = emu.add_machine_frame_notifier( "
+            #     "function() "
+            #         "if (string.len(commands) > 0) then "#Check global commands string for new commands
+            #             "for cmd in string.gmatch(commands, '[^;]+') do " #Split command string by ';' and iterate over each part
+            #                 "if string.len(cmd) > 0 then  "#If the command is not empty
+            #                     "cmdFn = load(cmd) ; "#Create a function for the command 
+            #                     "table.insert(cmdQ, cmdFn); "#Add it the queue for execution
+            #                 "end "
+            #             "end "
+            #             "commands = '' ; " #Clear the commands string for the next frame
+            #         "end "
+            #         "frame_num = screen:frame_number() ; " #Get the current frame number
+            #         "frame_diff = frame_num - last_frame ; " # useful difference in frames since the last command execution
+            #         "if #cmdQ>0 and frame_diff>=2 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
+            #             "print('#cmdQ: '..#cmdQ..' frame_num: '..frame_num..' diff: '..frame_diff) ; "
+            #             "last_frame = frame_num ; "
+            #             "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
+            #             "if not success then "
+            #                 "errors = errors..last_result..';'  ; "#Add error message to errors string
+            #                 "cmdQ={} ; " #Clear the command queue after error
+            #             "end "
+            #             "table.remove(cmdQ,1) ; " #remove the function from the table after executing it
+            #         "end "
+            #     "end "
+            # ") "
+
+            # inputs global string accepts comma-delimited data for simulating input over successive frames
+            # each parens group contains: (ioport, iofield, value, n_frame_from_now)
+            "inputs = '' ; " #--eg-- [(':IN2' ,'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] 
+            "inputs_sub = emu.add_machine_frame_notifier( "
                 "function() "
-                    "if (string.len(commands) > 0) then "#Check global commands string for new commands
-                        "for cmd in string.gmatch(commands, '[^;]+') do " #Split command string by ';' and iterate over each part
-                            "if string.len(cmd) > 0 then  "#If the command is not empty
-                                "cmdFn = load(cmd) ; "#Create a function for the command 
-                                "table.insert(cmdQ, cmdFn); "#Add it the queue for execution
+                    "this_frame = screen:frame_number() ; "
+                    "input_list = {} ; "
+                    "if (string.len(inputs) > 0) then " #-- Check if the inputs string is non-empty
+                        #-- Pull contents of each () group into a table
+                        "for input_action in string.gmatch(inputs, '%s*%((.-)%)') do "
+                            #-- Split the 4 comma-delimited string and number values into 4 named variables
+                            "a, b, c, d = string.match(input_action, \"%s*'([^']*)'%s*,%s*'([^']*)'%s*,%s*(%d+)%s*,%s*(%d+)%s*\") ; "
+                            "if a and b and c and d then " #-- Ensure matching succeeded
+                                #-- Create a table for the input action
+                                "input_map = {ioport=a, iofield=b, value=tonumber(c), on_frame=this_frame+tonumber(d)} ; "
+                                #-- Add this to the input list 
+                                "table.insert(input_list, input_map) ; "
                             "end "
                         "end "
-                        "commands = '' ; " #Clear the commands string for the next frame
+                        "inputs='' ; " #-- Optionally reset the inputs string
                     "end "
-                    "frame_num = screen:frame_number() ; " #Get the current frame number
-                    "frame_diff = frame_num - last_frame ; " # useful difference in frames since the last command execution
-                    "if #cmdQ>0 and frame_diff>=2 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
-                        "print('#cmdQ: '..#cmdQ..' frame_num: '..frame_num..' diff: '..frame_diff) ; "
-                        "last_frame = frame_num ; "
-                        "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
-                        "if not success then "
-                            "errors = errors..last_result..';'  ; "#Add error message to errors string
-                            "cmdQ={} ; " #Clear the command queue after error
+                    "if #input_list>0 then " #--if there are inputs to process
+                        "for i, input in ipairs(input_list) do " #--iterate over the input list
+                            "if input.on_frame <= this_frame then " #--if the input is scheduled for now (or previously)
+                                "ioports[input.ioport].fields[input.iofield]:set_value(input.value) ; "  #--action the input
+                                "table.remove(input_list, i) ; " #--no longer pending
+                            "end "
                         "end "
-                        "table.remove(cmdQ,1) ; " #remove the function from the table after executing it
                     "end "
                 "end "
             ") "
