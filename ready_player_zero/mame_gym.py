@@ -12,7 +12,7 @@ class JoustEnv(gym.Env):
 
     PLAYER = 1 # 1 or 2
     FPS = 60
-    BOOT_SECONDS = 11 # Number of seconds after MAME reboot before client can connect 
+    BOOT_SECONDS = 10 # Number of seconds after MAME reboot before client can connect 
     BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
     READY_UP_FRAMES = 150 # How many frames after "pressing start" before player can move
@@ -110,9 +110,9 @@ class JoustEnv(gym.Env):
             self._queue_input(command)
         else:
             self._queue_command('') # no-op to preserve consistent timing 
-        for i in range(2):  # watching Joust indicates actions are not observable until the _th frame after input
-            self._unpause_step_frame()
-            # self._queue_command("emu.unpause();emu.step();")
+        for i in range(1):  # watching Joust indicates actions are not observable until the _th frame after input
+            # self._unpause_step_frame()
+            self._queue_command("emu.unpause();emu.step();")
         observation = self._get_observation()
         lives = self._get_lives()
         score = self._get_score()
@@ -137,7 +137,8 @@ class JoustEnv(gym.Env):
         # the mechanism here is to set a global variable in Lua, which gets split up and executed frame by frame on the Lua side 
         # via the Lua code found in _init_lua_globabls
         # NOTE command should be valid Lua code, and should not contain line-feeds or double-quotes 
-        self.client.execute(f"commands=commands..\"{command}\" ")
+        # self.client.execute(f"commands=commands..\"{command}\" ")
+        self.client.execute(f"commands=\"{command}\"")
 
     def _ready_up(self):
         self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
@@ -310,42 +311,49 @@ class JoustEnv(gym.Env):
             "last_result = nil ; " #holds the result of the last Lua code execution when executed over frames
             "cmdQ = {} ; "
             "last_frame = 0 ; "
-            # "if commands_sub then commands_sub:unsubscribe() end ; " #remove any existing frame notifier for commands
+        ))
+        #enables issuing a sequence of any semicolon-delimited Lua over successive future frames by setting the 'commands' global string
+        self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
+            "if commands_sub then commands_sub:unsubscribe() end ; " #remove any existing frame notifier for commands
+            "commands_sub = emu.add_machine_frame_notifier( "
+                "function() "
+                    "if (string.len(commands) > 0) then "#Check global commands string for new commands
+                        "for cmd in string.gmatch(commands, '[^;]+') do " #Split command string by ';' and iterate over each part
+                            "if string.len(cmd) > 0 then  "#If the command is not empty
+                                # "cmdFn = load(cmd) ; "#Create a function for the command 
+                                "table.insert(cmdQ, cmd); "#Add it the queue for execution
+                            "end "
+                        "end "
+                        "commands = '' ; " #Clear the commands string for the next frame
+                    "end "
+                    "this_frame = screen:frame_number() ; " #Get the current frame number
+                    "frame_diff = this_frame - last_frame ; " # useful difference in frames since the last command execution
+                    "if #cmdQ>0 and frame_diff>=1 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
+                        "last_frame = this_frame ; "
+                        "cmd = cmdQ[1] ; " #Get the first command in the queue
+                        "cmdFn = load(cmd) ; " #Create an executable function for it 
+                        "print(this_frame, '', cmd) ; "
+                        "success, last_result = pcall(cmdFn) ; "#Execute the command function with error checking
+                        "if not success then "
+                            "errors = errors..last_result..';'  ; "#Add error message to errors string
+                            "cmdQ={} ; " #Clear the command queue after error
+                        "end "
+                        "table.remove(cmdQ,1) ; " #remove the function from the table after executing it
+                    "end "
+                "end "
+            ") "
 
-            # #below enables issuing a sequence of Lua instructions over successive future frames by setting the 'commands' global
-            # "commands_sub = emu.add_machine_frame_notifier( "
-            #     "function() "
-            #         "if (string.len(commands) > 0) then "#Check global commands string for new commands
-            #             "for cmd in string.gmatch(commands, '[^;]+') do " #Split command string by ';' and iterate over each part
-            #                 "if string.len(cmd) > 0 then  "#If the command is not empty
-            #                     "cmdFn = load(cmd) ; "#Create a function for the command 
-            #                     "table.insert(cmdQ, cmdFn); "#Add it the queue for execution
-            #                 "end "
-            #             "end "
-            #             "commands = '' ; " #Clear the commands string for the next frame
-            #         "end "
-            #         "frame_num = screen:frame_number() ; " #Get the current frame number
-            #         "frame_diff = frame_num - last_frame ; " # useful difference in frames since the last command execution
-            #         "if #cmdQ>0 and frame_diff>=2 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
-            #             "print('#cmdQ: '..#cmdQ..' frame_num: '..frame_num..' diff: '..frame_diff) ; "
-            #             "last_frame = frame_num ; "
-            #             "success, last_result = pcall(cmdQ[1]) ; "#Execute the next command function in the queue with error checking
-            #             "if not success then "
-            #                 "errors = errors..last_result..';'  ; "#Add error message to errors string
-            #                 "cmdQ={} ; " #Clear the command queue after error
-            #             "end "
-            #             "table.remove(cmdQ,1) ; " #remove the function from the table after executing it
-            #         "end "
-            #     "end "
-            # ") "
-
-            # inputs global string accepts comma-delimited data for simulating input over successive frames
-            # each parens group contains: (ioport, iofield, value, n_frame_from_now)
-            "inputs = '' ; " #--eg-- [(':IN2' ,'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] 
+        ))
+        # enables setting the 'inputs' global string with comma-delimited input data for processing over successive frames
+        # a sample 'inputs' string:  [(':IN2' ,'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] 
+        # each parens group contains: (ioport, iofield, value, n_frame_from_now)
+        self.client.execute(( 
+            "inputs = '' ; " 
+            "input_list = {} ; "
+            "if inputs_sub then inputs_sub:unsubscribe() end ; " #remove any existing frame notifier for inputs 
             "inputs_sub = emu.add_machine_frame_notifier( "
                 "function() "
                     "this_frame = screen:frame_number() ; "
-                    "input_list = {} ; "
                     "if (string.len(inputs) > 0) then " #-- Check if the inputs string is non-empty
                         #-- Pull contents of each () group into a table
                         "for input_action in string.gmatch(inputs, '%s*%((.-)%)') do "
@@ -358,13 +366,14 @@ class JoustEnv(gym.Env):
                                 "table.insert(input_list, input_map) ; "
                             "end "
                         "end "
-                        "inputs='' ; " #-- Optionally reset the inputs string
+                        "inputs='' ; " # reset inputs 
                     "end "
                     "if #input_list>0 then " #--if there are inputs to process
                         "for i, input in ipairs(input_list) do " #--iterate over the input list
                             "if input.on_frame <= this_frame then " #--if the input is scheduled for now (or previously)
                                 "ioports[input.ioport].fields[input.iofield]:set_value(input.value) ; "  #--action the input
-                                "table.remove(input_list, i) ; " #--no longer pending
+                                "print(this_frame, '', '', input.ioport, input.iofield, input.value) ; "  #--log
+                                "table.remove(input_list, i) ; " #--this input is no longer pending
                             "end "
                         "end "
                     "end "
@@ -453,9 +462,10 @@ if __name__ == "__main__":
 
     for _ in range(1000):
         # action = env.action_space.sample()  # Random action
-        action = [0,0,0,3,0,0,0,2][_ % 8]  
+        # action = [0,0,0,2,0,0,0,3][_ % 8]  
+        action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]  
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.1)
+        sleep(.4)
         
         if done or truncated:
             observation, info = env.reset()
