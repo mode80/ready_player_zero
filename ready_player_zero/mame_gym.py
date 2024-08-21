@@ -1,4 +1,5 @@
 # %%
+from telnetlib import NOOPT
 from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
@@ -33,26 +34,25 @@ class JoustEnv(gym.Env):
     # and 'n_frame_from_now' is how many frames to wait before applying the input (0 for right now)
     # a list of these can simulate complex input like "press button, hold joystick up and to the left, release".
     # the full Input Action sequence is sent & executed in the MAME Lua environment to avoid IO timing variance 
-    COIN1       = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
+    COIN1           = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
 
-    P1_START    = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
-    P2_START    = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 2)]
+    P1_START        = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
+    P2_START        = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 2)]
 
-    P1_LEFT     = [(':INP1', 'P1 Left',        1, 0),   (':INP1','P1 Left',        0, 2)]
-    P1_RIGHT    = [(':INP1', 'P1 Right',       1, 0),   (':INP1','P1 Right',       0, 2)]
-    P1_FLAP     = [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2)]
-    P1_FLAP_LEFT= [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2), # press Flap and Left together,
-                   (':INP1', 'P1 Left',        1, 0),   (':INP1','P1 Left',        0, 2)] # then release both in 2 frames
-    P1_FLAP_RIGHT=[(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2),
-                   (':INP1', 'P1 Right',       1, 0),   (':INP1','P1 Right',       0, 2)]  
+    P1_LEFT         = [(':INP1', 'P1 Left',        1, 0),   (':INP1','P1 Left',        0, 2)]
+    P1_RIGHT        = [(':INP1', 'P1 Right',       1, 0),   (':INP1','P1 Right',       0, 2)]
+    P1_FLAP         = [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2)]
 
-    P2_LEFT     = [(':INP2', 'P2 Left',        1, 0),   (':INP2','P2 Left',        0, 2)]
-    P2_RIGHT    = [(':INP2', 'P2 Right',       1, 0),   (':INP2','P2 Right',       0, 2)]
-    P2_FLAP     = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2)]
-    P2_FLAP_LEFT= [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2),
-                   (':INP2', 'P2 Left',        1, 0),   (':INP2','P2 Left',        0, 2)]  
-    P2_FLAP_RIGHT=[(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2),
-                   (':INP2', 'P2 Right',       1, 0),   (':INP2','P2 Right',       0, 2)]  
+    P1_FLAP_LEFT    = P1_FLAP + P1_LEFT # press Flap and Left together, then release both in 2 frames
+    P1_FLAP_RIGHT   = P1_FLAP + P1_RIGHT
+
+    P2_LEFT         = [(':INP2', 'P2 Left',        1, 0),   (':INP2','P2 Left',        0, 2)]
+    P2_RIGHT        = [(':INP2', 'P2 Right',       1, 0),   (':INP2','P2 Right',       0, 2)]
+    P2_FLAP         = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2)]
+
+    P2_FLAP_LEFT    = P2_FLAP + P2_LEFT
+    P2_FLAP_RIGHT   = P2_FLAP + P2_RIGHT
+                 
 
     if PLAYER == 1:
         START, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT = P1_START, P1_LEFT, P1_RIGHT, P1_FLAP, P1_FLAP_LEFT, P1_FLAP_RIGHT 
@@ -106,13 +106,8 @@ class JoustEnv(gym.Env):
         
         command = self.actions[action]
         print(command) # TODO remove debug print
-        if command is not None:
-            self._queue_input(command)
-        else:
-            self._queue_command('') # no-op to preserve consistent timing 
-        for i in range(1):  # watching Joust indicates actions are not observable until the _th frame after input
-            # self._unpause_step_frame()
-            self._queue_command("emu.unpause();emu.step();")
+        if command is not None: self._queue_input(command)
+        self._unpause_step_frame()
         observation = self._get_observation()
         lives = self._get_lives()
         score = self._get_score()
@@ -140,13 +135,16 @@ class JoustEnv(gym.Env):
         # self.client.execute(f"commands=commands..\"{command}\" ")
         self.client.execute(f"commands=\"{command}\"")
 
+    def _is_ready(self):
+        # Asks the MAME instance if it is paused. Can also mean it's booting up so really represents "is ready"
+        ret = self.client.execute("return machine.paused()")
+        return self.is_paused 
+
     def _ready_up(self):
         self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
         self._send_input(JoustEnv.START) # press Start # Joust specific
-        # while self._get_lives() == 0 or self._get_score()!=0 : 
-        #     sleep(JoustEnv.INPUT_DELAY)# wait for play to start
         self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
-        # while self._commands_are_processing(): pass # wait for play to start
+        # while not self._is_ready: pass  
 
     def _unpause_step_frame(self):
         # a paused game doesn't process input. so this convenience fn unshackles the game for a moment, then repauses
@@ -159,35 +157,12 @@ class JoustEnv(gym.Env):
         self._queue_input(input_action)
         if self.is_paused: self._unpause_step_frame()
 
-    # def _send_input(self, port_field):
-    #     # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input
-    #     # these are rom specific and can be found with _get_inputs()
-    #     # this action is async in the sense that the inputs may be processed after this function returns
-    #     port = port_field[0]
-    #     field = port_field[1]
-    #     self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(1); ")
-    #     sleep(JoustEnv.INPUT_DELAY) # needs some delay betweeen input commands :/ 
-    #     self.client.execute(f"ioports['{port}'].fields['{field}']:set_value(0); ")
-    #     sleep(JoustEnv.INPUT_DELAY)
-
     def _queue_input(self, input_action):
         # takes an input action data structure and simulates the corrsponding user input
         # e.g. [(':IN2', 'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] # press insert coin button, release in 2 frames
         # will run on client when it's (now or later) unpaused
         input_action_str = str(input_action) # need string to send over to Lua
         self.client.execute(f"inputs=\"{input_action_str}\"; ")
-
-    # def _queue_input(self, port_field):
-    #     # takes a (port,field) input tuple e.g. (":IN2","Coin 1") and simulates that user input 
-    #     # these are rom specific and can be found with _get_inputs() 
-    #     # this action is async in the sense that the inputs may be processed after this function returns
-    #     port = port_field[0]
-    #     field = port_field[1]
-    #     command = ((
-    #         f"ioports['{port}'].fields['{field}']:set_value(1); "
-    #         f"ioports['{port}'].fields['{field}']:set_value(0) "
-    #     ))
-    #     self._queue_command(command)
 
     def _commands_are_processing(self):
         # returns true if there are commands in the queue that have not been processed
@@ -303,51 +278,13 @@ class JoustEnv(gym.Env):
     def _init_lua(self):
         # set some persistant global variables in the MAME client session for later use
         self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
-            "screen = manager.machine.screens[':screen'] or manager.machine.screens:at(1) ; " # reference to the screen device
+            "screen = manager.machine.screens:at(1) ; " # reference to the screen device
             "ioports = manager.machine.ioport.ports ; " # reference to the ioports device
             "mem = manager.machine.devices[':maincpu'].spaces['program'] ; " # reference to the maincpu program space
-            "commands = '' ; " #persistant global string takes semicolon-delimited Lua code for execution over successive frames 
-            "errors = '' ; " #holds semicolon-delimited error messages from Lua code execution
-            "last_result = nil ; " #holds the result of the last Lua code execution when executed over frames
-            "cmdQ = {} ; "
+            # enables setting the 'inputs' global string with comma-delimited input data for processing over successive frames
+            # a sample 'inputs' string:  [(':IN2' ,'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] 
+            # each parens group contains: (ioport, iofield, value, n_frame_from_now)
             "last_frame = 0 ; "
-        ))
-        #enables issuing a sequence of any semicolon-delimited Lua over successive future frames by setting the 'commands' global string
-        self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
-            "if commands_sub then commands_sub:unsubscribe() end ; " #remove any existing frame notifier for commands
-            "commands_sub = emu.add_machine_frame_notifier( "
-                "function() "
-                    "if (string.len(commands) > 0) then "#Check global commands string for new commands
-                        "for cmd in string.gmatch(commands, '[^;]+') do " #Split command string by ';' and iterate over each part
-                            "if string.len(cmd) > 0 then  "#If the command is not empty
-                                # "cmdFn = load(cmd) ; "#Create a function for the command 
-                                "table.insert(cmdQ, cmd); "#Add it the queue for execution
-                            "end "
-                        "end "
-                        "commands = '' ; " #Clear the commands string for the next frame
-                    "end "
-                    "this_frame = screen:frame_number() ; " #Get the current frame number
-                    "frame_diff = this_frame - last_frame ; " # useful difference in frames since the last command execution
-                    "if #cmdQ>0 and frame_diff>=1 then "#If queue has commands and some frames have passed (frame spacing no less than this works) 
-                        "last_frame = this_frame ; "
-                        "cmd = cmdQ[1] ; " #Get the first command in the queue
-                        "cmdFn = load(cmd) ; " #Create an executable function for it 
-                        "print(this_frame, '', cmd) ; "
-                        "success, last_result = pcall(cmdFn) ; "#Execute the command function with error checking
-                        "if not success then "
-                            "errors = errors..last_result..';'  ; "#Add error message to errors string
-                            "cmdQ={} ; " #Clear the command queue after error
-                        "end "
-                        "table.remove(cmdQ,1) ; " #remove the function from the table after executing it
-                    "end "
-                "end "
-            ") "
-
-        ))
-        # enables setting the 'inputs' global string with comma-delimited input data for processing over successive frames
-        # a sample 'inputs' string:  [(':IN2' ,'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] 
-        # each parens group contains: (ioport, iofield, value, n_frame_from_now)
-        self.client.execute(( 
             "inputs = '' ; " 
             "input_list = {} ; "
             "if inputs_sub then inputs_sub:unsubscribe() end ; " #remove any existing frame notifier for inputs 
