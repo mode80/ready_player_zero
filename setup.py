@@ -12,7 +12,7 @@ setup(
     description="A Gymnasium-compatible environment for MAME games",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/mode80/mame-gym",
+    url="https://github.com/mode80/ready_player_zero",
     packages=find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",

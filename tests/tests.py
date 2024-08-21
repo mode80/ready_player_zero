@@ -1,13 +1,11 @@
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from time import sleep
 
 from ready_player_zero import JoustEnv
 import numpy as np
 
-def test_atomic_functions():
-
+def test_atomic_functions(env):
     # Test _read_byte and _read_dword
     byte_value = env._read_byte(JoustEnv.P1_LIVES_ADDR)
     assert 0 <= byte_value <= 255, "Invalid byte value"
@@ -44,17 +42,12 @@ def test_atomic_functions():
 
     print("All atomic function tests passed!")
 
-def test_action_and_observation():
+def test_action_and_observation(env):
+    env.reset()
 
-    env.reset() 
-
-    # Test _send_input
-    env._send_input(JoustEnv.LEFT)
-    assert not env._commands_are_processing(), "Command queue should be empty after _send_input"
-
-    # Test _step_frame
-    env._step_frame()
-    assert not env._commands_are_processing(), "Command queue should be empty after _step_frame"
+    # Test _queue_input
+    env._queue_input(JoustEnv.LEFT)
+    assert env._commands_are_processing(), "Command queue should not be empty after _queue_input"
 
     # Test _get_observation
     observation = env._get_observation()
@@ -62,27 +55,25 @@ def test_action_and_observation():
 
     print("All action and observation tests passed!")
 
-def test_game_logic():
-
+def test_game_logic(env):
     # Test _calculate_reward
-    env.last_score = {1: 0, 2: 0}
-    env.last_lives = {1: 3, 2: 3}
-    reward = env._calculate_reward()
+    env.last_score = 0
+    env.last_lives = 3
+    reward = env._calculate_reward(score=100, lives=3)
     assert -1.0 <= reward <= 1.0, "Reward out of expected range"
 
     # Test _check_done
-    done = env._check_done()
+    done = env._check_done(score=100, lives=0)
     assert isinstance(done, bool), "Done is not a boolean"
 
     print("All game logic tests passed!")
 
-def test_environment_lifecycle():
-
+def test_environment_lifecycle(env):
     # Test reset
     observation, info = env.reset()
     assert observation.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation shape"
-    assert env.last_score == {1: 0, 2: 0}, "Scores not reset"
-    assert env.last_lives[JoustEnv.PLAYER] == 3, "Lives not reset"
+    assert env.last_score == 0, "Score not reset"
+    assert env.last_lives == 3, "Lives not reset"
 
     # Test step
     action = env.action_space.sample()
@@ -98,18 +89,19 @@ def test_environment_lifecycle():
 
     print("All environment lifecycle tests passed!")
 
-def test_joust_env():
+def test_joust_env(env):
     assert env.client is not None, "MAME client not initialized"
     assert env.observation_space.shape == (JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), "Incorrect observation space"
-    assert env.action_space.n == 4, "Incorrect action space"
+    assert env.action_space.n == 6, "Incorrect action space"
+    assert len(env.actions) == 6, "Incorrect number of actions"
     print("JoustEnv initialization test passed!")
 
-env = JoustEnv()
-test_atomic_functions()
-test_action_and_observation()
-test_game_logic()
-test_environment_lifecycle()
-test_joust_env()
-env.close()
-print("All tests completed successfully!")
-
+if __name__ == "__main__":
+    env = JoustEnv()
+    test_atomic_functions(env)
+    test_action_and_observation(env)
+    test_game_logic(env)
+    test_environment_lifecycle(env)
+    test_joust_env(env)
+    env.close()
+    print("All tests completed successfully!")

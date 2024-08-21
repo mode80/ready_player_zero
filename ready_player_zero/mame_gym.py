@@ -12,7 +12,6 @@ from mame_client import MAMEClient
 class JoustEnv(gym.Env):
 
     PLAYER = 1 # 1 or 2
-    FPS = 60
     BOOT_SECONDS = 10 # Number of seconds after MAME reboot before client can connect 
     BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
@@ -65,9 +64,7 @@ class JoustEnv(gym.Env):
         self.client = mame_client or MAMEClient()
 
         # Define action space based on available inputs
-        # self.action_space = spaces.Discrete(sum(len(port) for port in self.inputs.values()))
-        # self.action_space = spaces.Discrete(6)  # Left, Right, Flap, Left+Flap, Right+Flap, No-op
-        self.action_space = spaces.Discrete(4)  # Left, Right, Flap, No-op
+        self.action_space = spaces.Discrete(6)  # Left, Right, Flap, No-op
         self.actions = [None, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.FLAP_LEFT, JoustEnv.FLAP_RIGHT] # Joust specific
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
@@ -88,10 +85,9 @@ class JoustEnv(gym.Env):
         self._soft_reset()
         sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot TODO: try connecting repeately instead of sleeping
         self.client.connect() # reconnect after reboot
-        # self._init_lua() # turns out a _soft_reset() does not clear previous globals so we shouldn't do this again here 
-        # self._throttled_on()
+        self._throttled_on()
         self._ready_up() # actions to start the game
-        # self._pause()
+        self._pause()
 
         # re-cache last score and lives 
         self.last_score = self._get_score() 
@@ -335,7 +331,8 @@ class JoustEnv(gym.Env):
 
     # def _get_rom_inputs(self):
     #     # utility fn to get all available "port" and "field" input codes for arbitraty MAME roms 
-    #     lua_script = dedent("""
+    #     # this requires json dependancy so commenting out for now 
+    #     lua_script = """
     #         function serialize(obj)
     #             local items = {}
     #             for k, v in pairs(obj) do
@@ -358,7 +355,7 @@ class JoustEnv(gym.Env):
     #             return serialize(inputs)
     #         end
     #         return get_inputs()
-    #     """)
+    #     """
     #     result = self.mame.execute(lua_script)
     #     # Parse the JSON string into a Python dictionary and return
     #     input_dict = json.loads(result.decode())
@@ -397,12 +394,12 @@ if __name__ == "__main__":
 
     observation, info = env.reset()
 
-    for _ in range(1000):
-        # action = env.action_space.sample()  # Random action
-        # action = [0,0,0,2,0,0,0,3][_ % 8]  
-        action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]  
+    while True: 
+        action = env.action_space.sample()  # Random action
+        # action = [0,0,0,4,0,0,0,5][_ % 8]  
+        # action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]  
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.4)
+        # sleep(.4)
         
         if done or truncated:
             observation, info = env.reset()

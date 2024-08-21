@@ -1,6 +1,6 @@
 # Ready Player Zero 
 
-This project provides a Gymnasium-compatible environment for the MAME (Multiple Arcade Machine Emulator) game Joust. It allows reinforcement learning agents to interact with the game through a Python interface.
+This project provides an [OpenAI Gym](https://gymnasium.farama.org/)-compatible environment for the MAME (Multiple Arcade Machine Emulator) games, initially Joust. It allows reinforcement learning agents to interact with the game through a Python interface.
 
 ## Files
 
@@ -10,39 +10,40 @@ This project provides a Gymnasium-compatible environment for the MAME (Multiple 
 
 ## Setup
 
-1. Ensure you have MAME installed on your system.
+1. Ensure you have [MAME](https://www.mamedev.org/) installed on your system.
 2. Place `mame_server.lua` in a location accessible to MAME.
-3. Install the required Python packages:
-    pip install gymnasium numpy 
+3. Install the required Python packages: ``` pip install gymnasium numpy ```
+4. Install this package with ```pip install -e .``` from the project root to make it available to your python script located elsewhere. 
 
+## Example Usage
 
-## Usage
-
-1. Start MAME with the Joust ROM and the server script:
-mame joust -window -autoboot_script path/to/mame_server.lua
-
+1. Start MAME with the Joust ROM and useful options: 
+    ```
+    mame joust -window -skip_gameinfo -console -pause_brightness 1.0 -autoboot_script /path/to/mame_server.lua
+    ```
 
 2. In your Python script, you can now use the environment:
 
-```python
-from mame_gym import JoustEnv
+    ```python
+    from mame_gym import JoustEnv
 
-env = JoustEnv()
-observation, info = env.reset()
+    env = JoustEnv()
+    observation, info = env.reset()
 
-for _ in range(1000):
-    action = env.action_space.sample()  # Random action
-    observation, reward, done, truncated, info = env.step(action)
-    
-    if done or truncated:
-        observation, info = env.reset()
+    for _ in range(1000):
+        action = env.action_space.sample()  # Random action
+        observation, reward, done, truncated, info = env.step(action)
+        
+        if done or truncated:
+            observation, info = env.reset()
 
-env.close()
-```
+    env.close()
+    ```
+
 
 ## Environment Details
 - Observation Space: Box(0, 255, (240, 292, 3), uint8)
-- Action Space: Discrete(6) (Left, Right, Flap, No-op)
+- Action Space: Discrete(6) NOOP, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT 
 - Reward: Based on score increase and life loss
 - Done: When the player loses all lives
 
@@ -56,6 +57,7 @@ env.close()
 ## Notes
 - The environment is currently set up for the game Joust, but can be adapted for other MAME-supported games.
 - Ensure that the MAME server is running before attempting to connect with the Python environment.
+- This is very much a work in progress. Let's call it v0.4. It's (probably) functional.
 
 ## Future Improvements
 - Implement support for multiple MAME games
@@ -67,6 +69,3 @@ env.close()
 
 - Credit to M.J. Murray's [MAMEToolkit](https://github.com/M-J-Murray/MAMEToolkit) for inspiration. 
 - Goals here are compatibility with the latest unmodified [MAME](https://github.com/mamedev/mame) release and to support a standard [Gym](https://gymnasium.farama.org/) interface.
-
-## Contributing
-Contributions to improve the environment or add support for more games are welcome. Please submit a pull request or open an issue for discussion.
