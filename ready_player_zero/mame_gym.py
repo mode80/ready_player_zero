@@ -5,7 +5,6 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from mame_client import MAMEClient
-# import json
 # from textwrap import dedent
 # from matplotlib import pyplot as plt
 
@@ -30,9 +29,10 @@ class JoustEnv(gym.Env):
     # Input Actions are a list of Input Items, each having (port, field, value, n_frames_from_now)
     # where 'port' and 'field' are rom specific, found with _get_rom_inputs(), 
     # 'value' is 1 or 0 (for buttons) to indicate "press down" and "release" respectively, 
-    # and 'n_frame_from_now' is how many frames to wait before applying the input (0 for right now)
-    # a list of these can simulate complex input like "press button, hold joystick up and to the left, release".
+    # and 'n_frames_from_now' is how many frames to wait before applying the input (0 for right now)
+    # a List of these can simulate complex input like "press button, hold joystick up and to the left, release".
     # the full Input Action sequence is sent & executed in the MAME Lua environment to avoid IO timing variance 
+
     COIN1           = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
 
     P1_START        = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
@@ -52,6 +52,7 @@ class JoustEnv(gym.Env):
     P2_FLAP_LEFT    = P2_FLAP + P2_LEFT
     P2_FLAP_RIGHT   = P2_FLAP + P2_RIGHT
                  
+    NOOP            = [(':IN2' , 'Coin 1',         0, 0)] # 'release coin' as a stand in for no op # TODO: make better 
 
     if PLAYER == 1:
         START, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT = P1_START, P1_LEFT, P1_RIGHT, P1_FLAP, P1_FLAP_LEFT, P1_FLAP_RIGHT 
@@ -65,18 +66,18 @@ class JoustEnv(gym.Env):
 
         # Define action space based on available inputs
         self.action_space = spaces.Discrete(6)  # Left, Right, Flap, No-op
-        self.actions = [None, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.FLAP_LEFT, JoustEnv.FLAP_RIGHT] # Joust specific
+        self.actions = [JoustEnv.NOOP, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.FLAP_LEFT, JoustEnv.FLAP_RIGHT] # Joust specific
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
         self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
 
         self.render_mode = None 
         self.reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
+        self.is_paused = False
 
-        # Connect to a MAME instance launched with e.g "mame -autoboot_script mame_server.lua"
+        # Connect to a MAME instance already launched with e.g "mame -autoboot_script mame_server.lua"
         self.client.connect() 
         self._init_lua()
-        self.is_paused = False
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -102,7 +103,7 @@ class JoustEnv(gym.Env):
         
         command = self.actions[action]
         print(command) # TODO remove debug print
-        if command is not None: self._queue_input(command)
+        self._queue_input(command)
         self._unpause_step_frame()
         observation = self._get_observation()
         lives = self._get_lives()
@@ -176,11 +177,13 @@ class JoustEnv(gym.Env):
         self.is_paused = False 
 
     def _wait_n_frames(self, n):
-        # wait timespan of n frames
+        # wait timespan of n frame numbers
         init_frame_num = self._get_frame_number()
         end_frame_num = init_frame_num + n
-        while self._get_frame_number() < end_frame_num:
-            pass
+        was_paused = self.is_paused
+        if was_paused: self._unpause() # frame numbers don't increment when paused
+        while self._get_frame_number() < end_frame_num: pass
+        if was_paused: self._pause()
 
     def _throttled_on(self):
         ret = self.client.execute("manager.machine.video.throttled = true")
@@ -277,6 +280,7 @@ class JoustEnv(gym.Env):
             "screen = manager.machine.screens:at(1) ; " # reference to the screen device
             "ioports = manager.machine.ioport.ports ; " # reference to the ioports device
             "mem = manager.machine.devices[':maincpu'].spaces['program'] ; " # reference to the maincpu program space
+            "printt = function(t) for k,v in pairs(t) do print(k,v) end end ; " # helper function to print tables
             # enables setting the 'inputs' global string with comma-delimited input data for processing over successive frames
             # a sample 'inputs' string:  [(':IN2' ,'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] 
             # each parens group contains: (ioport, iofield, value, n_frame_from_now)
@@ -284,6 +288,8 @@ class JoustEnv(gym.Env):
             "inputs = '' ; " 
             "input_list = {} ; "
             "if inputs_sub then inputs_sub:unsubscribe() end ; " #remove any existing frame notifier for inputs 
+        )) # there's a limit on how much text can execute in one call, so this is split into multiple calls
+        self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
             "inputs_sub = emu.add_machine_frame_notifier( "
                 "function() "
                     "this_frame = screen:frame_number() ; "
@@ -292,16 +298,16 @@ class JoustEnv(gym.Env):
                         "for input_action in string.gmatch(inputs, '%s*%((.-)%)') do "
                             #-- Split the 4 comma-delimited string and number values into 4 named variables
                             "a, b, c, d = string.match(input_action, \"%s*'([^']*)'%s*,%s*'([^']*)'%s*,%s*(%d+)%s*,%s*(%d+)%s*\") ; "
-                            "if a and b and c and d then " #-- Ensure matching succeeded
-                                #-- Create a table for the input action
-                                "input_map = {ioport=a, iofield=b, value=tonumber(c), on_frame=this_frame+tonumber(d)} ; "
-                                #-- Add this to the input list 
-                                "table.insert(input_list, input_map) ; "
-                            "end "
+                            #-- Create a table for the input action
+                            "input_map = {ioport=a, iofield=b, value=tonumber(c), on_frame=this_frame+tonumber(d)} ; "
+                            #-- Add this to the input list 
+                            "table.insert(input_list, input_map) ; "
                         "end "
                         "inputs='' ; " # reset inputs 
                     "end "
-                    "if #input_list>0 then " #--if there are inputs to process
+                    "if #input_list>0 and this_frame > last_frame then " #--if there are inputs to process
+                        #-- notifier runs even when game is paused, so ensure new frame number 
+                        "print(this_frame) ; "
                         "for i, input in ipairs(input_list) do " #--iterate over the input list
                             "if input.on_frame <= this_frame then " #--if the input is scheduled for now (or previously)
                                 "ioports[input.ioport].fields[input.iofield]:set_value(input.value) ; "  #--action the input
@@ -331,7 +337,6 @@ class JoustEnv(gym.Env):
 
     # def _get_rom_inputs(self):
     #     # utility fn to get all available "port" and "field" input codes for arbitraty MAME roms 
-    #     # this requires json dependancy so commenting out for now 
     #     lua_script = """
     #         function serialize(obj)
     #             local items = {}
@@ -356,19 +361,7 @@ class JoustEnv(gym.Env):
     #         end
     #         return get_inputs()
     #     """
-    #     result = self.mame.execute(lua_script)
-    #     # Parse the JSON string into a Python dictionary and return
-    #     input_dict = json.loads(result.decode())
-    #     return input_dict
-
-    # def _action_to_input(self, action):
-    #     count = 0
-    #     for port_name, fields in self.inputs.items():
-    #         for field_name in fields:
-    #             if count == action:
-    #                 return port_name, field_name
-    #             count += 1
-    #     raise ValueError(f"Invalid action: {action}")
+    #     return self.client.execute(lua_script)
 
 # def sample_PPO():
 #     from stable_baselines3 import PPO
@@ -391,12 +384,11 @@ class JoustEnv(gym.Env):
 # Example usage
 if __name__ == "__main__":
     env = JoustEnv()
+    env.reset()
 
-    observation, info = env.reset()
-
-    while True: 
-        action = env.action_space.sample()  # Random action
-        # action = [0,0,0,4,0,0,0,5][_ % 8]  
+    for _ in range(1000): 
+        # action = env.action_space.sample()  # Random action
+        action = [0,0,0,4,0,0,0,5][_ % 8]  
         # action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]  
         observation, reward, done, truncated, info = env.step(action)
         # sleep(.4)

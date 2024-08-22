@@ -1,6 +1,6 @@
 # Ready Player Zero 
 
-This project provides an [OpenAI Gym](https://gymnasium.farama.org/)-compatible environment for the MAME (Multiple Arcade Machine Emulator) games, initially Joust. It allows reinforcement learning agents to interact with the game through a Python interface.
+This project provides an [OpenAI Gym](https://gymnasium.farama.org/)-compatible environment for MAME (Multiple Arcade Machine Emulator) games, initially Joust. It allows reinforcement learning agents to interact with the game through a Python interface.
 
 ## Files
 
@@ -43,7 +43,7 @@ This project provides an [OpenAI Gym](https://gymnasium.farama.org/)-compatible 
 
 ## Environment Details
 - Observation Space: Box(0, 255, (240, 292, 3), uint8)
-- Action Space: Discrete(6) NOOP, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT 
+- Action Space: Discrete(6) NOOP, FLAP, LEFT, RIGHT, FLAP_LEFT, FLAP_RIGHT 
 - Reward: Based on score increase and life loss
 - Done: When the player loses all lives
 
