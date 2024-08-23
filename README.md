@@ -39,14 +39,6 @@ This project provides an [OpenAI Gym](https://gymnasium.farama.org/)-compatible 
 
     env.close()
     ```
-
-
-## Environment Details
-- Observation Space: Box(0, 255, (240, 292, 3), uint8)
-- Action Space: Discrete(6) NOOP, FLAP, LEFT, RIGHT, FLAP_LEFT, FLAP_RIGHT 
-- Reward: Based on score increase and life loss
-- Done: When the player loses all lives
-
 ## Features
 - Implements a simple protocol for control of MAME over TCP/IP
 - Supports pausing, unpausing, and stepping through frames

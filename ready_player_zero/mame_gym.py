@@ -34,30 +34,26 @@ class JoustEnv(gym.Env):
     # the full Input Action sequence is sent & executed in the MAME Lua environment to avoid IO timing variance 
 
     COIN1           = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
+    START           = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
+    START_2P        = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 2)]
 
-    P1_START        = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
-    P2_START        = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 2)]
+    P1_FLAP         = [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 1)] # press flap, release next frame
+    P1_STICK_LEFT   = [(':INP1', 'P1 Left',        1, 0),   (':INP1', 'P1 Right',      0, 0)] # when stick is left, not stick right is forced off
+    P1_STICK_RIGHT  = [(':INP1', 'P1 Right',       1, 0),   (':INP1', 'P1 Left',       0, 0)] # likewise
+    P1_STICK_CENTER = [(':INP1', 'P1 Left',        0, 0),   (':INP1','P1 Right',       0, 0)]
 
-    P1_LEFT         = [(':INP1', 'P1 Left',        1, 0),   (':INP1','P1 Left',        0, 2)]
-    P1_RIGHT        = [(':INP1', 'P1 Right',       1, 0),   (':INP1','P1 Right',       0, 2)]
-    P1_FLAP         = [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 2)]
-
-    P1_FLAP_LEFT    = P1_FLAP + P1_LEFT # press Flap and Left together, then release both in 2 frames
-    P1_FLAP_RIGHT   = P1_FLAP + P1_RIGHT
-
-    P2_LEFT         = [(':INP2', 'P2 Left',        1, 0),   (':INP2','P2 Left',        0, 2)]
-    P2_RIGHT        = [(':INP2', 'P2 Right',       1, 0),   (':INP2','P2 Right',       0, 2)]
-    P2_FLAP         = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 2)]
-
-    P2_FLAP_LEFT    = P2_FLAP + P2_LEFT
-    P2_FLAP_RIGHT   = P2_FLAP + P2_RIGHT
-                 
-    NOOP            = [(':IN2' , 'Coin 1',         0, 0)] # 'release coin' as a stand in for no op # TODO: make better 
+    # P2_FLAP         = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 1)]
+    # P2_STICK_LEFT   = [(':INP2', 'P2 Left',        1, 0)]
+    # P2_STICK_RIGHT  = [(':INP2', 'P2 Right',       1, 0)]
+    # P2_STICK_CENTER = [(':INP2', 'P2 Left',        0, 0),   (':INP2','P2 Right',       0, 0)]
+                
+    P1_NOOP            = P1_STICK_CENTER 
+    # P2_NOOP            = P2_STICK_CENTER
 
     if PLAYER == 1:
-        START, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT = P1_START, P1_LEFT, P1_RIGHT, P1_FLAP, P1_FLAP_LEFT, P1_FLAP_RIGHT 
-    else:
-        START, LEFT, RIGHT, FLAP, FLAP_LEFT, FLAP_RIGHT = P2_START, P2_LEFT, P2_RIGHT, P2_FLAP, P2_FLAP_LEFT, P2_FLAP_RIGHT 
+        NOOP, FLAP, LEFT, RIGHT = P1_STICK_CENTER , P1_FLAP, P1_STICK_LEFT, P1_STICK_RIGHT 
+    # else:
+        # FLAP, LEFT, RIGHT, CENTER  = P1_FLAP, P2_STICK_LEFT, P2_STICK_RIGHT, P2_STICK_CENTER
 
 
     def __init__(self, mame_client=None):
@@ -65,8 +61,8 @@ class JoustEnv(gym.Env):
         self.client = mame_client or MAMEClient()
 
         # Define action space based on available inputs
-        self.action_space = spaces.Discrete(6)  # Left, Right, Flap, No-op
-        self.actions = [JoustEnv.NOOP, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.FLAP_LEFT, JoustEnv.FLAP_RIGHT] # Joust specific
+        self.action_space = spaces.Discrete(4)  
+        self.actions = [JoustEnv.NOOP, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT] # Joust specific
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
         self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
@@ -100,11 +96,10 @@ class JoustEnv(gym.Env):
         return observation, info
 
     def step(self, action):
-        
         command = self.actions[action]
         print(command) # TODO remove debug print
-        self._queue_input(command)
-        self._unpause_step_frame()
+        if command: self._queue_input(command)
+        self._step_frame()
         observation = self._get_observation()
         lives = self._get_lives()
         score = self._get_score()
@@ -143,16 +138,11 @@ class JoustEnv(gym.Env):
         self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
         # while not self._is_ready: pass  
 
-    def _unpause_step_frame(self):
-        # a paused game doesn't process input. so this convenience fn unshackles the game for a moment, then repauses
-        self._unpause() # if we don't unpause input doesn't process (TODO: unpredictable time unpaused due to IO?) 
-        self._step_frame() 
-
     def _send_input(self, input_action):
         # queues up a single input action and processes it by unpausing briefly if necessary 
         # for more fine-grained control, use _queue_input and _flush_input separately
         self._queue_input(input_action)
-        if self.is_paused: self._unpause_step_frame()
+        if self.is_paused: self._step_frame()
 
     def _queue_input(self, input_action):
         # takes an input action data structure and simulates the corrsponding user input
@@ -194,9 +184,16 @@ class JoustEnv(gym.Env):
         if ret != b'OK': raise RuntimeError(ret)
 
     def _step_frame(self):
-        ret = self.client.execute("emu.step()")
-        if ret != b'OK': raise RuntimeError(ret)
-        self.is_paused = True
+        # ret = self.client.execute("emu.step()")
+        # if ret != b'OK': raise RuntimeError(ret)
+        # self.is_paused = True
+        #
+        # it turns out emu.step() advances one framenumber but doesn't process input.
+        # so we need to unpause briefly instead 
+        self._unpause() # if we don't unpause input doesn't process 
+        self._pause() 
+        # (TODO: unpredictable time unpaused due to clinet IO?) # could instead use a lua 
+        #        side frame_notifier fn that always pauses then unpauses next frame
 
     def _soft_reset(self):
         ret = self.client.execute("return manager.machine:soft_reset()")
@@ -293,6 +290,7 @@ class JoustEnv(gym.Env):
             "inputs_sub = emu.add_machine_frame_notifier( "
                 "function() "
                     "this_frame = screen:frame_number() ; "
+                    "print(this_frame) ; "
                     "if (string.len(inputs) > 0) then " #-- Check if the inputs string is non-empty
                         #-- Pull contents of each () group into a table
                         "for input_action in string.gmatch(inputs, '%s*%((.-)%)') do "
@@ -306,8 +304,7 @@ class JoustEnv(gym.Env):
                         "inputs='' ; " # reset inputs 
                     "end "
                     "if #input_list>0 and this_frame > last_frame then " #--if there are inputs to process
-                        #-- notifier runs even when game is paused, so ensure new frame number 
-                        "print(this_frame) ; "
+                        #-- notifier runs even when game is paused, so ensure new frame number above
                         "for i, input in ipairs(input_list) do " #--iterate over the input list
                             "if input.on_frame <= this_frame then " #--if the input is scheduled for now (or previously)
                                 "ioports[input.ioport].fields[input.iofield]:set_value(input.value) ; "  #--action the input
@@ -387,11 +384,16 @@ if __name__ == "__main__":
     env.reset()
 
     for _ in range(1000): 
-        # action = env.action_space.sample()  # Random action
-        action = [0,0,0,4,0,0,0,5][_ % 8]  
-        # action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]  
+        action = env.action_space.sample()  # Random action
+        # action = [2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3][_ % 20]
+        # action = [2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]
+        # action = [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+        #          ,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+        #          ,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+        #          ,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+        #          ][_ % 240]  
         observation, reward, done, truncated, info = env.step(action)
-        # sleep(.4)
+        # sleep(.2)
         
         if done or truncated:
             observation, info = env.reset()
