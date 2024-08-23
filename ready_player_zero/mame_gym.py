@@ -1,5 +1,4 @@
 # %%
-from telnetlib import NOOPT
 from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
@@ -48,10 +47,10 @@ class JoustEnv(gym.Env):
     # P2_STICK_CENTER = [(':INP2', 'P2 Left',        0, 0),   (':INP2','P2 Right',       0, 0)]
                 
     P1_NOOP            = P1_STICK_CENTER 
-    # P2_NOOP            = P2_STICK_CENTER
+    # P2_NOOP            = None #P2_STICK_CENTER
 
     if PLAYER == 1:
-        NOOP, FLAP, LEFT, RIGHT = P1_STICK_CENTER , P1_FLAP, P1_STICK_LEFT, P1_STICK_RIGHT 
+        NOOP, FLAP, LEFT, RIGHT = P1_NOOP, P1_FLAP, P1_STICK_LEFT, P1_STICK_RIGHT 
     # else:
         # FLAP, LEFT, RIGHT, CENTER  = P1_FLAP, P2_STICK_LEFT, P2_STICK_RIGHT, P2_STICK_CENTER
 
@@ -81,6 +80,7 @@ class JoustEnv(gym.Env):
         self._throttled_off()
         self._soft_reset()
         sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot TODO: try connecting repeately instead of sleeping
+        while not self._is_ready(): pass
         self.client.connect() # reconnect after reboot
         self._throttled_on()
         self._ready_up() # actions to start the game
@@ -90,7 +90,7 @@ class JoustEnv(gym.Env):
         self.last_score = self._get_score() 
         self.last_lives = self._get_lives()
                
-        observation = self._get_observation()
+        observation = self._get_image()
 
         info = {}
         return observation, info
@@ -98,19 +98,21 @@ class JoustEnv(gym.Env):
     def step(self, action):
         command = self.actions[action]
         print(command) # TODO remove debug print
-        if command: self._queue_input(command)
-        self._step_frame()
-        observation = self._get_observation()
-        lives = self._get_lives()
-        score = self._get_score()
+        if self.is_paused: self._unpause() # all this executes in arbitrary order!
+        if command: self._queue_input(command) # this has the behaviour of queuing but not executing until 1 frame later (after the code below!)
+        self._wait_n_frames(1)# all this executes in arbitrary order!
+        self._pause()# all this executes in arbitrary order!
+        observation = self._get_image()# all this executes in arbitrary order!
+        lives = self._get_lives()# all this executes in arbitrary order!
+        score = self._get_score()# all this executes in arbitrary order!
         reward = self._calculate_reward(score,lives)
         done = self._check_done(score,lives)
-        info = {}
+        info = {'lives': lives, 'score': score}
         return observation, reward, done, False, info
 
     def render(self):
         if self.render_mode == 'rgb_array':
-            return self._get_observation()
+            return self._get_image()
         elif self.render_mode == None:
             return None
         else:
@@ -118,14 +120,6 @@ class JoustEnv(gym.Env):
 
     def close(self):
         self.client.close()
-
-    def _queue_command(self, command):
-        # adds a line (or many semi-colon delimited lines) of Lua code to a queue for execution over future frames
-        # the mechanism here is to set a global variable in Lua, which gets split up and executed frame by frame on the Lua side 
-        # via the Lua code found in _init_lua_globabls
-        # NOTE command should be valid Lua code, and should not contain line-feeds or double-quotes 
-        # self.client.execute(f"commands=commands..\"{command}\" ")
-        self.client.execute(f"commands=\"{command}\"")
 
     def _is_ready(self):
         # Asks the MAME instance if it is paused. Can also mean it's booting up so really represents "is ready"
@@ -136,11 +130,11 @@ class JoustEnv(gym.Env):
         self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
         self._send_input(JoustEnv.START) # press Start # Joust specific
         self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
+        self.client.execute("print('done ready up')")
         # while not self._is_ready: pass  
 
     def _send_input(self, input_action):
         # queues up a single input action and processes it by unpausing briefly if necessary 
-        # for more fine-grained control, use _queue_input and _flush_input separately
         self._queue_input(input_action)
         if self.is_paused: self._step_frame()
 
@@ -168,10 +162,10 @@ class JoustEnv(gym.Env):
 
     def _wait_n_frames(self, n):
         # wait timespan of n frame numbers
-        init_frame_num = self._get_frame_number()
-        end_frame_num = init_frame_num + n
         was_paused = self.is_paused
         if was_paused: self._unpause() # frame numbers don't increment when paused
+        init_frame_num = self._get_frame_number()
+        end_frame_num = init_frame_num + n + 1 #initial call to _get_frame_number() will increment the frame number
         while self._get_frame_number() < end_frame_num: pass
         if was_paused: self._pause()
 
@@ -188,16 +182,21 @@ class JoustEnv(gym.Env):
         # if ret != b'OK': raise RuntimeError(ret)
         # self.is_paused = True
         #
-        # it turns out emu.step() advances one framenumber but doesn't process input.
+        # it turns out emu.step() above advances one framenumber but doesn't process input.
         # so we need to unpause briefly instead 
         self._unpause() # if we don't unpause input doesn't process 
         self._pause() 
         # (TODO: unpredictable time unpaused due to clinet IO?) # could instead use a lua 
         #        side frame_notifier fn that always pauses then unpauses next frame
 
+    def _wait(self, secs):
+        ret = self.client.execute(f"return emu.wait({secs})")
+        return (ret == b'true')
+
     def _soft_reset(self):
         ret = self.client.execute("return manager.machine:soft_reset()")
         if ret != b'OK': raise RuntimeError(ret)
+        self.is_paused=False
 
     def _get_screen_size(self):
         result = self.client.execute("return screen.width .. 'x' .. screen.height") # depends on _init_lua for 'screen'
@@ -211,7 +210,7 @@ class JoustEnv(gym.Env):
     def _get_pixels(self):
         return self.client.execute("return screen:pixels()") # depends on _init_lua for 'screen'
 
-    def _get_observation(self):
+    def _get_image(self):
         pixels = self._get_pixels()
         # trim any "footer" data beyond pixel values of JoustEnv.HEIGHT * JoustEnv.WIDTH * 4
         pixels = pixels[:JoustEnv.HEIGHT * JoustEnv.WIDTH * 4]
@@ -284,14 +283,17 @@ class JoustEnv(gym.Env):
             "last_frame = 0 ; "
             "inputs = '' ; " 
             "input_list = {} ; "
+            "ponce = 0 ; "
             "if inputs_sub then inputs_sub:unsubscribe() end ; " #remove any existing frame notifier for inputs 
         )) # there's a limit on how much text can execute in one call, so this is split into multiple calls
         self.client.execute(( # this gets sent as semi-colon separated Lua code without linebreaks
             "inputs_sub = emu.add_machine_frame_notifier( "
                 "function() "
                     "this_frame = screen:frame_number() ; "
-                    "print(this_frame) ; "
-                    "if (string.len(inputs) > 0) then " #-- Check if the inputs string is non-empty
+                    "is_paused = (this_frame == last_frame) ; "
+                    "if is_paused then ponce = ponce + 1 else ponce = 0 end ; "
+                    "print(this_frame..':'..ponce) ; "
+                    "if (string.len(inputs) > 0) then " #-- Check if the inputs string is non-empty # TODO  this could/should me moved to execute same-frame for 0-delay inputs
                         #-- Pull contents of each () group into a table
                         "for input_action in string.gmatch(inputs, '%s*%((.-)%)') do "
                             #-- Split the 4 comma-delimited string and number values into 4 named variables
@@ -303,16 +305,16 @@ class JoustEnv(gym.Env):
                         "end "
                         "inputs='' ; " # reset inputs 
                     "end "
-                    "if #input_list>0 and this_frame > last_frame then " #--if there are inputs to process
-                        #-- notifier runs even when game is paused, so ensure new frame number above
+                    "if #input_list>0 and not is_paused then " #--if there are inputs to process
                         "for i, input in ipairs(input_list) do " #--iterate over the input list
                             "if input.on_frame <= this_frame then " #--if the input is scheduled for now (or previously)
                                 "ioports[input.ioport].fields[input.iofield]:set_value(input.value) ; "  #--action the input
-                                "print(this_frame, '', '', input.ioport, input.iofield, input.value) ; "  #--log
+                                "print('', input.ioport, input.iofield, input.value) ; "  #--log
                                 "table.remove(input_list, i) ; " #--this input is no longer pending
                             "end "
                         "end "
                     "end "
+                "last_frame = this_frame ; "#-- notifier runs even when game is paused, so ensure new frame number above
                 "end "
             ") "
         ))
@@ -386,12 +388,12 @@ if __name__ == "__main__":
     for _ in range(1000): 
         # action = env.action_space.sample()  # Random action
         # action = [2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3][_ % 20]
-        action = [2,0,0,0,0,0,3,0,0,0,0,0][_ % 12]
-        # action = [2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
-        #          ,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-        #          ,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-        #          ,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
-        #          ][_ % 240]  
+        # action = [2,0,0,0,0,0,3,0,0,0,0,0][_ % 12]
+        action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 240]  
+        # env._wait(.2)
         observation, reward, done, truncated, info = env.step(action)
         # sleep(.2)
         
