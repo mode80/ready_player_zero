@@ -34,25 +34,33 @@ class JoustEnv(gym.Env):
 
     COIN1           = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
     START           = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
-    START_2P        = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 2)]
+    START_2P        = [(':IN0' , '2 Player Start', 1, 0),   (':IN0', '2 Player Start', 0, 1)]
 
     P1_FLAP         = [(':INP1', 'P1 Button 1',    1, 0),   (':INP1','P1 Button 1',    0, 1)] # press flap, release next frame
-    P1_STICK_LEFT   = [(':INP1', 'P1 Left',        1, 0),   (':INP1', 'P1 Right',      0, 0)] # when stick is left, not stick right is forced off
-    P1_STICK_RIGHT  = [(':INP1', 'P1 Right',       1, 0),   (':INP1', 'P1 Left',       0, 0)] # likewise
-    P1_STICK_CENTER = [(':INP1', 'P1 Left',        0, 0),   (':INP1','P1 Right',       0, 0)]
+    P1_STICK_LEFT   = [(':INP1', 'P1 Left',        1, 0),   (':INP1', 'P1 Right',      0, 0)] # when stick is left, stick-right is forced off
+    P1_STICK_RIGHT  = [(':INP1', 'P1 Right',       1, 0),   (':INP1', 'P1 Left',       0, 0)] # and vice versa
+    P1_STICK_CENTER = [(':INP1', 'P1 Left',        0, 0),   (':INP1','P1 Right',       0, 0)] # center stick releases both left and right
 
-    # P2_FLAP         = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 1)]
-    # P2_STICK_LEFT   = [(':INP2', 'P2 Left',        1, 0)]
-    # P2_STICK_RIGHT  = [(':INP2', 'P2 Right',       1, 0)]
-    # P2_STICK_CENTER = [(':INP2', 'P2 Left',        0, 0),   (':INP2','P2 Right',       0, 0)]
-                
+    P2_FLAP         = [(':INP2', 'P2 Button 1',    1, 0),   (':INP2','P2 Button 1',    0, 1)] 
+    P2_STICK_LEFT   = [(':INP2', 'P2 Left',        1, 0),   (':INP2', 'P2 Right',      0, 0)] 
+    P2_STICK_RIGHT  = [(':INP2', 'P2 Right',       1, 0),   (':INP2', 'P2 Left',       0, 0)] 
+    P2_STICK_CENTER = [(':INP2', 'P2 Left',        0, 0),   (':INP2','P2 Right',       0, 0)]
+
+    P1_FLAP_LEFT   = P1_FLAP + P1_STICK_LEFT  # press flap, hold stick left
+    P1_FLAP_RIGHT  = P1_FLAP + P1_STICK_RIGHT # press flap, hold stick right
+    P1_FLAP_CENTER = P1_FLAP + P1_STICK_CENTER # press flap, hold stick center
+
+    P2_FLAP_LEFT   = P2_FLAP + P2_STICK_LEFT  
+    P2_FLAP_RIGHT  = P2_FLAP + P2_STICK_RIGHT
+    P2_FLAP_CENTER = P2_FLAP + P2_STICK_CENTER
+
     P1_NOOP            = P1_STICK_CENTER 
-    # P2_NOOP            = None #P2_STICK_CENTER
+    P2_NOOP            = P2_STICK_CENTER
 
     if PLAYER == 1:
-        NOOP, FLAP, LEFT, RIGHT = P1_NOOP, P1_FLAP, P1_STICK_LEFT, P1_STICK_RIGHT 
-    # else:
-        # FLAP, LEFT, RIGHT, CENTER  = P1_FLAP, P2_STICK_LEFT, P2_STICK_RIGHT, P2_STICK_CENTER
+        NOOP, FLAP, LEFT, RIGHT, FLAP_LEFT, FLAP_RIGHT, FLAP_CENTER = P1_NOOP, P1_FLAP, P1_STICK_LEFT, P1_STICK_RIGHT, P1_FLAP_LEFT, P1_FLAP_RIGHT, P1_FLAP_CENTER
+    else:
+        NOOP, FLAP, LEFT, RIGHT, FLAP_LEFT, FLAP_RIGHT, FLAP_CENTER = P2_NOOP, P2_FLAP, P2_STICK_LEFT, P2_STICK_RIGHT, P2_FLAP_LEFT, P2_FLAP_RIGHT, P2_FLAP_CENTER
 
 
     def __init__(self, mame_client=None):
@@ -60,8 +68,8 @@ class JoustEnv(gym.Env):
         self.client = mame_client or MAMEClient()
 
         # Define action space based on available inputs
-        self.action_space = spaces.Discrete(4)  
-        self.actions = [JoustEnv.NOOP, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT] # Joust specific
+        self.action_space = spaces.Discrete(7)  
+        self.actions = [JoustEnv.NOOP, JoustEnv.FLAP, JoustEnv.LEFT, JoustEnv.RIGHT, JoustEnv.FLAP_LEFT, JoustEnv.FLAP_RIGHT, JoustEnv.FLAP_CENTER]
 
         # TODO normalize below to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
         self.observation_space = spaces.Box(low=0, high=255, shape=(JoustEnv.HEIGHT, JoustEnv.WIDTH, 3), dtype=np.uint8) 
@@ -80,7 +88,6 @@ class JoustEnv(gym.Env):
         self._throttled_off()
         self._soft_reset()
         sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot TODO: try connecting repeately instead of sleeping
-        while not self._is_ready(): pass
         self.client.connect() # reconnect after reboot
         self._throttled_on()
         self._ready_up() # actions to start the game
@@ -98,13 +105,13 @@ class JoustEnv(gym.Env):
     def step(self, action):
         command = self.actions[action]
         print(command) # TODO remove debug print
-        if self.is_paused: self._unpause() # all this executes in arbitrary order!
-        if command: self._queue_input(command) # this has the behaviour of queuing but not executing until 1 frame later (after the code below!)
-        self._wait_n_frames(1)# all this executes in arbitrary order!
-        self._pause()# all this executes in arbitrary order!
-        observation = self._get_image()# all this executes in arbitrary order!
-        lives = self._get_lives()# all this executes in arbitrary order!
-        score = self._get_score()# all this executes in arbitrary order!
+        if self.is_paused: self._unpause() 
+        if command: self._send_input(command) # this has the behaviour of queuing but not executing until 1 frame later 
+
+        self._pause()
+        observation = self._get_image()
+        lives = self._get_lives()
+        score = self._get_score()
         reward = self._calculate_reward(score,lives)
         done = self._check_done(score,lives)
         info = {'lives': lives, 'score': score}
@@ -134,16 +141,19 @@ class JoustEnv(gym.Env):
         # while not self._is_ready: pass  
 
     def _send_input(self, input_action):
-        # queues up a single input action and processes it by unpausing briefly if necessary 
-        self._queue_input(input_action)
-        if self.is_paused: self._step_frame()
-
-    def _queue_input(self, input_action):
         # takes an input action data structure and simulates the corrsponding user input
         # e.g. [(':IN2', 'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] # press insert coin button, release in 2 frames
-        # will run on client when it's (now or later) unpaused
-        input_action_str = str(input_action) # need string to send over to Lua
-        self.client.execute(f"inputs=\"{input_action_str}\"; ")
+        lua = ""
+        for ia in input_action:
+            if ia[3] == 0: # "this frame actions"
+                lua += f"ioports['{ia[0]}'].fields['{ia[1]}']:set_value({ia[2]}) ; "
+            else: # future frame actions
+                lua += f"inputs=inputs..\"{str(ia)}\"; " # set the lua global for later pickup in frame loop running on Lua side
+        if lua:
+            was_paused = self.is_paused 
+            if was_paused: self._unpause()
+            self.client.execute(lua)   
+            if was_paused: self._pause()
 
     def _commands_are_processing(self):
         # returns true if there are commands in the queue that have not been processed
@@ -165,7 +175,7 @@ class JoustEnv(gym.Env):
         was_paused = self.is_paused
         if was_paused: self._unpause() # frame numbers don't increment when paused
         init_frame_num = self._get_frame_number()
-        end_frame_num = init_frame_num + n + 1 #initial call to _get_frame_number() will increment the frame number
+        end_frame_num = init_frame_num + n - 1 # -1 because initial call to _get_frame_number() will increment the frame number
         while self._get_frame_number() < end_frame_num: pass
         if was_paused: self._pause()
 
@@ -176,18 +186,6 @@ class JoustEnv(gym.Env):
     def _throttled_off(self):
         ret = self.client.execute("manager.machine.video.throttled = false")
         if ret != b'OK': raise RuntimeError(ret)
-
-    def _step_frame(self):
-        # ret = self.client.execute("emu.step()")
-        # if ret != b'OK': raise RuntimeError(ret)
-        # self.is_paused = True
-        #
-        # it turns out emu.step() above advances one framenumber but doesn't process input.
-        # so we need to unpause briefly instead 
-        self._unpause() # if we don't unpause input doesn't process 
-        self._pause() 
-        # (TODO: unpredictable time unpaused due to clinet IO?) # could instead use a lua 
-        #        side frame_notifier fn that always pauses then unpauses next frame
 
     def _wait(self, secs):
         ret = self.client.execute(f"return emu.wait({secs})")
@@ -299,7 +297,7 @@ class JoustEnv(gym.Env):
                             #-- Split the 4 comma-delimited string and number values into 4 named variables
                             "a, b, c, d = string.match(input_action, \"%s*'([^']*)'%s*,%s*'([^']*)'%s*,%s*(%d+)%s*,%s*(%d+)%s*\") ; "
                             #-- Create a table for the input action
-                            "input_map = {ioport=a, iofield=b, value=tonumber(c), on_frame=this_frame+tonumber(d)} ; "
+                            "input_map = {ioport=a, iofield=b, value=tonumber(c), on_frame=this_frame+tonumber(d)-1} ; " # -1 because it was scheduled last frame
                             #-- Add this to the input list 
                             "table.insert(input_list, input_map) ; "
                         "end "
@@ -386,16 +384,10 @@ if __name__ == "__main__":
     env.reset()
 
     for _ in range(1000): 
-        # action = env.action_space.sample()  # Random action
-        # action = [2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3][_ % 20]
-        # action = [2,0,0,0,0,0,3,0,0,0,0,0][_ % 12]
-        action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-                  1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 240]  
-        # env._wait(.2)
+        action = env.action_space.sample()  # Random action
+        # action = [2,2,0,0,0,3,3,3,3,3,0,0,0,2,2,2,2,2,0,0,0,3,3,3,3,3,0,0,0,2,2,2][_ % 32] # 5-steps to reverse direction in place. 5 steps after the 1st animates
+        # action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 25] # ~25 steps to flap once and land. 2nd frame after the flap animates. 
         observation, reward, done, truncated, info = env.step(action)
-        # sleep(.2)
         
         if done or truncated:
             observation, info = env.reset()
