@@ -1,4 +1,5 @@
 # %%
+from http.client import UNAUTHORIZED
 from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
@@ -10,10 +11,9 @@ from mame_client import MAMEClient
 class JoustEnv(gym.Env):
 
     PLAYER = 1 # 1 or 2
-    BOOT_SECONDS = 10 # Number of seconds after MAME reboot before client can connect 
-    BOOT_SECS_UNTHROTTLED = 2 #  "   "   " when not throttled
+    THROTTLED = False # If True, game will train at original framerate, otherwise as fast as possible
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. TODO: End of stage bonus?
-    READY_UP_FRAMES = 150 # How many frames after "pressing start" before player can move
+    READY_UP_FRAMES = 200 # How many frames after "pressing start" before player can move
 
     WIDTH=292 # screen pixel dimensions  
     HEIGHT=240
@@ -84,22 +84,16 @@ class JoustEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
-        self._throttled_off()
+        self._set_throttled(False) # speed through boot sequence
         self._soft_reset()
-        sleep(JoustEnv.BOOT_SECS_UNTHROTTLED) # wait for reboot TODO: try connecting repeately instead of sleeping
-        self.client.connect() # reconnect after reboot
-        self._throttled_on()
+        self._try_connecting()
+        self._set_throttled(JoustEnv.THROTTLED) # back to default
         self._ready_up() # actions to start the game
         self._pause()
-
-        # re-cache last score and lives 
         self.last_score = self._get_score() 
         self.last_lives = self._get_lives()
-               
         observation = self._get_image()
-
-        info = {}
+        info = {'lives': self.last_lives, 'score': self.last_score}
         return observation, info
 
     def step(self, action):
@@ -107,7 +101,6 @@ class JoustEnv(gym.Env):
         print(command) # TODO remove debug print
         if self.is_paused: self._unpause() 
         if command: self._send_input(command) # this has the behaviour of queuing but not executing until 1 frame later 
-
         self._pause()
         observation = self._get_image()
         lives = self._get_lives()
@@ -128,17 +121,28 @@ class JoustEnv(gym.Env):
     def close(self):
         self.client.close()
 
+    def _try_connecting(self, max_retries=100, retry_delay_secs=0.1):
+        for retries in range(max_retries):
+            try:
+                self.client.connect()  
+                return  
+            except Exception as e:
+                if retries == max_retries - 1:  # If this was the last attempt
+                    raise ConnectionError(f"Failed to connect after {max_retries} retries: {e}") from e
+                sleep(retry_delay_secs)
+        
+
     def _is_ready(self):
         # Asks the MAME instance if it is paused. Can also mean it's booting up so really represents "is ready"
         ret = self.client.execute("return machine.paused()")
         return self.is_paused 
 
     def _ready_up(self):
+        while self._read_byte(self.P1_LIVES_ADDR)!=3: sleep(0.1) # wait for memory to init (ie lives == demo default)
         self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
         self._send_input(JoustEnv.START) # press Start # Joust specific
         self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
-        self.client.execute("print('done ready up')")
-        # while not self._is_ready: pass  
+        self.client.execute("-- Done Ready Up")
 
     def _send_input(self, input_action):
         # takes an input action data structure and simulates the corrsponding user input
@@ -179,8 +183,9 @@ class JoustEnv(gym.Env):
         while self._get_frame_number() < end_frame_num: pass
         if was_paused: self._pause()
 
-    def _throttled_on(self):
-        ret = self.client.execute("manager.machine.video.throttled = true")
+    def _set_throttled(self, is_throttled=True):
+        bool_text = 'true' if is_throttled else 'false'
+        ret = self.client.execute(f"manager.machine.video.throttled = {bool_text}")
         if ret != b'OK': raise RuntimeError(ret)
 
     def _throttled_off(self):
@@ -386,7 +391,7 @@ if __name__ == "__main__":
     for _ in range(1000): 
         action = env.action_space.sample()  # Random action
         # action = [2,2,0,0,0,3,3,3,3,3,0,0,0,2,2,2,2,2,0,0,0,3,3,3,3,3,0,0,0,2,2,2][_ % 32] # 5-steps to reverse direction in place. 5 steps after the 1st animates
-        # action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 25] # ~25 steps to flap once and land. 2nd frame after the flap animates. 
+        action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 25] # ~25 steps to flap once and land. 2nd frame after the flap animates. 
         observation, reward, done, truncated, info = env.step(action)
         
         if done or truncated:

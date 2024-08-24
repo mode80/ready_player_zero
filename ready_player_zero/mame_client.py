@@ -8,7 +8,7 @@ class MAMEClient:
         self.sock = None  
 
     def connect(self):
-        if self.sock: self.close() # Close existing connection if any
+        # if self.sock: self.close() # Close existing connection if any
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Create TCP socket
         self.sock.connect((self.host, self.port))  # Establish connection to MAME
         print(f"Connected to {self.host}:{self.port}")
@@ -26,8 +26,7 @@ class MAMEClient:
         response = b''
         while b'\n' not in response:  # Loop until newline is received
             chunk = self.sock.recv(32767)# (4096)  # Receive data in chunks
-            if not chunk:
-                raise ConnectionError("Connection closed while receiving data")
+            if not chunk: raise ConnectionError("Connection closed while receiving data")
             response += chunk
         return response[:-1]  # Return response without the trailing newline
 
