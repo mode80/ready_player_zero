@@ -87,6 +87,7 @@ class JoustEnv(gym.Env):
         self._set_throttled(False) # speed through boot sequence
         self._soft_reset()
         self._try_connecting()
+        self._await_reboot_done() 
         self._set_throttled(JoustEnv.THROTTLED) # back to default
         self._ready_up() # actions to start the game
         self._pause()
@@ -122,23 +123,24 @@ class JoustEnv(gym.Env):
         self.client.close()
 
     def _try_connecting(self, max_retries=100, retry_delay_secs=0.1):
-        for retries in range(max_retries):
+        for retries in range(1,max_retries):
             try:
                 self.client.connect()  
                 return  
             except Exception as e:
-                if retries == max_retries - 1:  # If this was the last attempt
-                    raise ConnectionError(f"Failed to connect after {max_retries} retries: {e}") from e
+                if retries == max_retries:  # If this was the last attempt
+                    raise TimeoutError(f"Failed to connect after {max_retries} retries: {e}") from e
                 sleep(retry_delay_secs)
         
-
-    def _is_ready(self):
-        # Asks the MAME instance if it is paused. Can also mean it's booting up so really represents "is ready"
-        ret = self.client.execute("return machine.paused()")
-        return self.is_paused 
+    def _await_reboot_done(self, max_retries=100, retry_delay_secs=0.1):
+        # Wait for memory to initialize e.g. after reboot 
+        for retries in range(1,max_retries):
+            if not self._read_byte(self.P1_LIVES_ADDR)==3: sleep(0.1) # Joust specific (lives == demo default)
+            if retries == max_retries:
+                raise TimeoutError(f"Rebot not complete after {max_retries} retries")
 
     def _ready_up(self):
-        while self._read_byte(self.P1_LIVES_ADDR)!=3: sleep(0.1) # wait for memory to init (ie lives == demo default)
+        # while self._read_byte(self.P1_LIVES_ADDR)!=3: sleep(0.1) # wait for memory to init (ie lives == demo default)
         self._send_input(JoustEnv.COIN1) # insert a coin # Joust specific
         self._send_input(JoustEnv.START) # press Start # Joust specific
         self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
