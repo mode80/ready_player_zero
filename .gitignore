@@ -8,3 +8,4 @@ venv/
 *.py[cod]
 *.log
 *.tmp
+mini_server.lua

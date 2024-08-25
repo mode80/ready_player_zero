@@ -50,3 +50,8 @@ end
 
 listen_for_client()
 server_frame_sub = emu.add_machine_frame_notifier(runs_per_frame)
+
+----------------------------------
+
+-- echo "sock=emu.file('rwc');sock:open('socket.127.0.0.1:1942');emu.register_frame_done(function()ok,res=pcall(load(sock:read(4096)));ok=res and sock:write(string.pack('<I4',#res)..res);end)" | ./mame -console -window -autoboot_script /dev/stdin
+

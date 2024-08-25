@@ -1,14 +1,17 @@
 # %%
 from http.client import UNAUTHORIZED
 from random import randint
+import socket
 import struct
 from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
+import gymnasium
 import numpy as np
 from mame_client import MAMEClient
 # from textwrap import dedent
 # from matplotlib import pyplot as plt
+
 
 class JoustEnv(gym.Env):
 
@@ -33,6 +36,12 @@ class JoustEnv(gym.Env):
     # and 'n_frames_from_now' is how many frames to wait before applying the input (0 for right now)
     # a List of these can simulate complex input like "press button, hold joystick up and to the left, release".
     # the full Input Action sequence is sent & executed in the MAME Lua environment to avoid IO timing variance 
+
+    # This also works :/ 
+    # ioports[':INP1'].fields['P1 Button 1']:set_value(1) ;emu.wait_next_frame(); ioports[':INP1'].fields['P1 Button 1']:set_value(0) ;
+    # buuuut... it turns out hold time of the button influences airtime. so release should be a learnable thing :/ :/ 
+
+    # ioports[':IN2'].fields['Coin 1']:set_value(1) ;emu.wait_next_frame(); emu.wait_next_frame(); ioports[':IN2'].fields['Coin 1']:set_value(0)
 
     COIN1           = [(':IN2' , 'Coin 1',         1, 0),   (':IN2', 'Coin 1',         0, 2)] # press button, release in 2 frames
     START           = [(':IN0' , '1 Player Start', 1, 0),   (':IN0', '1 Player Start', 0, 2)]
