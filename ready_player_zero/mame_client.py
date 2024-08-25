@@ -25,7 +25,7 @@ class MAMEClient:
         self.sock.sendall(lua_code.encode() + b'\n')  # Send Lua code with newline delimiter
         response = b''
         while b'\n' not in response:  # Loop until newline is received
-            chunk = self.sock.recv(32767)# (4096)  # Receive data in chunks
+            chunk = self.sock.recv(32767)# (65536) # (32767)# (4096)  # Receive data in chunks
             if not chunk: raise ConnectionError("Connection closed while receiving data")
             response += chunk
         return response[:-1]  # Return response without the trailing newline
@@ -35,7 +35,7 @@ class MAMEClient:
 def main():
 
     blurb = """
-    Connects to a MAME that's running the 'mame_server.lua' script, allowing you to send Lua commands remotely.
+    Connects to a MAME instance that's running the 'mame_server.lua' script, allowing you to send Lua commands remotely.
     For available MAME Lua commands, visit: https://docs.mamedev.org/luascript/index.html 
 
     Example:

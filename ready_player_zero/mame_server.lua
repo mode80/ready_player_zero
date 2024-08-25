@@ -31,16 +31,16 @@ end
 
 -- checks for inbound Lua commands after each frame
 local function runs_per_frame()
-    local command = sock:read(1024)
+    local command = sock:read(4096)
     if #command > 0 then
-        if command:gsub("\r?\n?", "") == "quit" then -- Client is intentionally disconnecting
-            sock:write("\n") -- Send a newline to acknowledge the command
-            emu.print_info("Closing Server connection")
-            sock:close() -- Close this connection
-            listen_for_client() -- Start listening for a new client
-        else
-            -- Process regular commands
-            emu.print_info(command:gsub("\n$", "")) -- debugging output  
+    if command:gsub("\r?\n?", "") == "quit" then -- Client is intentionally disconnecting
+        sock:write("\n") -- Send a newline to acknowledge the command
+        emu.print_info("Closing Server connection")
+        sock:close() -- Close this connection
+        listen_for_client() -- Start listening for a new client
+    else
+        -- Process regular commands
+        emu.print_info(command:gsub("\n$", "")) -- debugging output  
             local result = execute_lua(command) -- ! 
             if type(result) == "boolean" then result = tostring(result) end -- stringify bools
             sock:write(result .. "\n") -- Send the result back to the client

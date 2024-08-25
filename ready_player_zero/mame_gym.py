@@ -1,5 +1,7 @@
 # %%
 from http.client import UNAUTHORIZED
+from random import randint
+import struct
 from time import sleep
 import gymnasium as gym
 from gymnasium import spaces
@@ -99,13 +101,13 @@ class JoustEnv(gym.Env):
 
     def step(self, action):
         command = self.actions[action]
-        print(command) # TODO remove debug print
-        if self.is_paused: self._unpause() 
-        if command: self._send_input(command) # this has the behaviour of queuing but not executing until 1 frame later 
-        self._pause()
-        observation = self._get_image()
-        lives = self._get_lives()
-        score = self._get_score()
+        print(command) # debug print
+        input_lua = ""
+        if command: input_lua = self._send_input_lua(command) 
+        # lives = self._get_lives()
+        # score = self._get_score()
+        # observation = self._get_image()
+        lives, score, observation  = self.get_state(input_lua)
         reward = self._calculate_reward(score,lives)
         done = self._check_done(score,lives)
         info = {'lives': lives, 'score': score}
@@ -121,6 +123,32 @@ class JoustEnv(gym.Env):
 
     def close(self):
         self.client.close()
+
+    def get_state(self,trigger_input_lua):
+        # this is a fairly ugly but IO-effiicient way to get the state needed for step()
+        # by sending over the input-triggering lua code and getting back all the state in one round trip
+        # then decoding the unholy mess before returning it
+        lua = (
+            # f"emu.wait_next_update() ; "
+            f"{trigger_input_lua} \n"
+            "emu.wait_next_update() ; emu.step(); "
+            # read player lives from magic memory address
+            f"local lives = mem:read_u8({[0,JoustEnv.P1_LIVES_ADDR,JoustEnv.P2_LIVES_ADDR][JoustEnv.PLAYER]}) ; "
+            # read player score from its 
+            f"local score = mem:read_u32({[0,JoustEnv.P1_SCORE_ADDR,JoustEnv.P2_SCORE_ADDR][JoustEnv.PLAYER]}) ; "
+            # bitpack data of known sizes # '>BI4' is for 'big-endian unsigned byte, unsigned 32-bit integer'
+            f"return string.pack('>BI4', lives, score) .. screen:pixels() ; " # send back with pixels
+        )
+        response = self.client.execute(lua)
+        
+        # Unpack lives and score
+        lives, score = struct.unpack(">BI", response[:5])
+        
+        # Convert remaining bytes to numpy array
+        # unflatten bytes into row,col,channel format; keep all rows and cols, but transform 'ABGR' to RGB  
+        image = np.frombuffer(response[5:], dtype=np.uint8).reshape((JoustEnv.HEIGHT, JoustEnv.WIDTH, 4))[:,:,2::-1]
+        
+        return lives, score, image
 
     def _try_connecting(self, max_retries=100, retry_delay_secs=0.1):
         for retries in range(1,max_retries):
@@ -146,15 +174,20 @@ class JoustEnv(gym.Env):
         self._wait_n_frames(JoustEnv.READY_UP_FRAMES)  
         self.client.execute("-- Done Ready Up")
 
-    def _send_input(self, input_action):
-        # takes an input action data structure and simulates the corrsponding user input
-        # e.g. [(':IN2', 'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] # press insert coin button, release in 2 frames
-        lua = ""
+    def _send_input_lua(self, input_action):
+        # just the lua code needed for _send_input
+        lua = '' 
         for ia in input_action:
-            if ia[3] == 0: # "this frame actions"
+            if ia[3] == 0: # "this-frame actions"
                 lua += f"ioports['{ia[0]}'].fields['{ia[1]}']:set_value({ia[2]}) ; "
-            else: # future frame actions
+            else: # future-frame actions
                 lua += f"inputs=inputs..\"{str(ia)}\"; " # set the lua global for later pickup in frame loop running on Lua side
+        return lua
+
+    def _send_input(self, input_action):
+        # takes an input action data structure and simulates the corresponding user input
+        # e.g. [(':IN2', 'Coin 1', 1, 0), (':IN2', 'Coin 1', 0, 2)] # press insert coin button, release in 2 frames
+        lua = self._send_input_lua(input_action)
         if lua:
             was_paused = self.is_paused 
             if was_paused: self._unpause()
@@ -390,11 +423,14 @@ if __name__ == "__main__":
     env = JoustEnv()
     env.reset()
 
-    for _ in range(1000): 
-        action = env.action_space.sample()  # Random action
-        # action = [2,2,0,0,0,3,3,3,3,3,0,0,0,2,2,2,2,2,0,0,0,3,3,3,3,3,0,0,0,2,2,2][_ % 32] # 5-steps to reverse direction in place. 5 steps after the 1st animates
-        action = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 25] # ~25 steps to flap once and land. 2nd frame after the flap animates. 
+    for _ in range(10000): 
+        # action = env.action_space.sample()  # Random action
+        # action = [0,0,2,2,3,3,1,2,3,4,5,6][randint(0,11)]
+        # 10-steps to reverse direction in place. 5 steps after the 1st animates
+        # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
+        action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         observation, reward, done, truncated, info = env.step(action)
+        # sleep(.5)
         
         if done or truncated:
             observation, info = env.reset()
