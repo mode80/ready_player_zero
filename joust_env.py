@@ -47,10 +47,10 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     CENTER_FLAP = CENTER + FLAP
 
     # advanced actions for harder-to-learn fine control over flap press and release
-    FLAP_PRESS  = "flap(1); "
-    FLAP_RELEASE= "flap(0); "
-    LEFT_FLAP_PRESS = "left(); flap(1);"
-    RIGHT_FLAP_PRESS = "right(); flap(1);"
+    FLAP_ON         = "flap(1); "
+    FLAP_OFF        = "flap(0); "
+    LEFT_FLAP_ON    = "left(); flap(1);"
+    RIGHT_FLAP_ON   = "right(); flap(1);"
 
     # Define action space based on available inputs
     actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
@@ -73,11 +73,16 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         script = ("sock=emu.file('rwc'); " # setup server-side TCP socket
                     "sock:open('socket.127.0.0.1:1942'); " # same hard-baked port used below
                     "on_frame=emu.add_machine_frame_notifier(function() " # this runs once per frame
-                    "cmd=sock:read(4096);"
-                    "ok,res=pcall(load(cmd)); res=res or ''; " # read socket content and execute it. 4096 bytes should be enough? 
-                    "sock:write(string.pack('<I4',#res)..res)" # write back results with 4-byte length prefix
-                    "end)"
-                    "print('listening...')"
+                        "cmd=sock:read(4096);" # read socket content and execute it. 4096 bytes should be enough? 
+                        "if #cmd>0 then " # if anything was inbound
+                            "local ok,res=pcall(load(cmd)); " # run it and capture results
+                            "if res==nil then res=''; end; " # if no results, set to empty string
+                            "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
+                            "print(cmd); "
+                            "sock:write(string.pack('<I4',#res)..(res or '')); " # write back results with 4-byte length prefix
+                        "end; "
+                    "end); "
+                    "print('listening...'); "
                 )
         open(mini_server, 'w').write(script)
 
@@ -86,60 +91,60 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self.mame = subprocess.Popen(
             [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-pause_brightness', '1.0', '-autoboot_script', mini_server], 
             cwd=os.path.dirname(exec),
-            # shell=True,
         )
-        # os.chdir(os.path.dirname(exec)) 
-        # subprocess.run( exec + ' joust -console -window -skip_gameinfo -pause_brightness 1.0 -autoboot_script ' + mini_server , start_new_session=True) 
 
-        # connect python gym env as client
-        for _ in range(200): # try to connect to MAME for 20 secs or so while it starts up
-            try: 
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # setup client side TCP socket 
-                self.sock.connect(('127.0.0.1', self.SOCKET_PORT)); break  # establish connection 
-            except: sleep(0.1)
+        self._try_connect()
 
         # init Lua environment
-        init_lua_globals = ( # some handy global shortcuts
+        self.init_globals_lua = ( # some handy global shortcuts
             "s = manager.machine.screens:at(1); "
             "mem = manager.machine.devices[':maincpu'].spaces['program'] ; " 
+            "vid = manager.machine.video; " 
             "printt = function(t) for k,v in pairs(t) do print(k,v) end end; "
         )
-        self._send_lua(init_lua_globals)
+        self._send_lua(self.init_globals_lua)
         self._send_lua(self.init_inputs_lua) # init Lua for inputs
-        self._init_frame_debug()
-
-
+        # self._init_frame_debug()
+            
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        lua_code = (
-            "manager.machine:soft_reset(); "# soft reset mame. (lua env survives)
-            "manager.machine.video.throttled = false; " # speed up boot sequence
-            f"while mem:read_u8({self.P1_LIVES_ADDR}) ~= 3 do emu.wait_next_frame() end; "# Wait for reboot done (checking P1 lives) TODO
-            f"{self.COIN_TAP} {self.START_TAP} "# Insert coin and start game
-            f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_frame() end; "# Wait for play to start
-            f"manager.machine.video.throttled = {str(self.THROTTLED).lower()}; "# Set throttle back to default
-        )
-        self._send_lua(lua_code)
+
+        self._send_lua( "vid.throttled = false; ") # speed up coming boot sequence
+        self._send_lua("manager.machine:soft_reset(); ")# soft reset mame. (lua event loop survives but connection doesn't)
+
+        self._try_connect()
+
+        self._send_lua( self.init_inputs_lua ) 
+        self._send_lua( self.init_globals_lua ) 
+        sleep(2)
+        self._send_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
+        self._send_lua( self.COIN_TAP + self.START_TAP )# Insert coin and start game
+        self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_frame() end; emu.pause(); ")# Wait for play to start
+
+        self.last_score, self.last_lives = 0,0 # re-init 
+
         observation, _, _, _, info = self.step() # step with no action to get initial state
         return observation, info
 
 
-    def step(self, action_idx):
+    def step(self, action_idx=None):
 
         input_lua=''
-        if action_idx is not None: 
+        if action_idx is not None: # 
             input_lua = self.actions[action_idx]
             print(input_lua) # debug
 
         lua_code = (
-            input_lua + "; emu.wait_next_frame(); "
-            f"local lives = mem:read_u8({self.P1_LIVES_ADDR}); " # read player lives from memory
-            f"local score = mem:read_u32({self.P1_SCORE_ADDR}); " # read player score from memory
-            "return string.pack('>B I4', lives, score) .. s:pixels()" # bitpak and return lives, score and screen pixels
+            input_lua + "; emu.wait_next_frame(); emu.step(); "
+            f"lives = mem:read_u8({self.P1_LIVES_ADDR}); " # extract lives from memory
+            f"score = mem:read_u32({self.P1_SCORE_ADDR}); " # extract score
+            "return string.pack('>B I4', lives, score)  .. s:pixels() ; " # bitpak and return lives, score and screen pixels
         )
 
         response = self._send_lua(lua_code)
         lives, score = struct.unpack(">BI", response[:5])
+
+        #TODO handle partial updates?
 
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
         observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
@@ -156,6 +161,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         done = (lives == 0)
 
         # Update last score and lives
+
         self.last_score, self.last_lives = score, lives
 
         info = {'lives': lives, 'score': score}
@@ -165,22 +171,37 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         if self.sock: self.sock.close()
         if self.mame: self.mame.kill()  # try terminate()?
 
-    def _send_lua(self, lua_code):
-        self.sock.sendall(lua_code.encode())
-        length = struct.unpack('<I', self.sock.recv(4))[0]
-        return self.sock.recv(length)
-    
     def _init_frame_debug(self):
         # optional code for printing frame number and pause count as they happen
         frame_debug_lua = (  
-            "last_frame = 0; ponce = 0;"
-            "on_frame_debug=emu.add_machine_frame_notifier(function() " 
+            "last_frame = 0; ponce = 0; "
+            "on_frame_debug=emu.add_machine_frame_notifier( function() " 
                 "this_frame = s:frame_number() ; "
                 "is_paused = (this_frame == last_frame) ; "
-            "if is_paused then ponce = ponce + 1 else ponce = 0 end ; "
-            "print(this_frame..':'..ponce) ; "
+                "if is_paused then ponce = ponce + 1 else ponce = 0 end ; "
+                "last_frame = this_frame ; "
+                "print(this_frame..':'..ponce) ; "
+                "end)"
         )
         self._send_lua(frame_debug_lua)
+
+
+    def _try_connect(self):
+        # connect python gym env as client
+        for _ in range(200): # try to connect to MAME for 20 secs or so while it starts up
+            try: 
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # setup client side TCP socket 
+                self.sock.connect(('127.0.0.1', self.SOCKET_PORT)); break  # establish connection 
+            except: sleep(0.1)
+    
+
+    def _send_lua(self, lua_code):
+        self.sock.sendall(lua_code.encode())
+        len_bytes = self.sock.recv(4)
+        len = struct.unpack('<I', len_bytes)[0]
+        ret = self.sock.recv(len)
+        return ret
+    
         
 
 # Example usage
