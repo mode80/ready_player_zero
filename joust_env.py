@@ -6,12 +6,12 @@ import os, subprocess, struct, socket, tempfile
 
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
-    THROTTLED = False
     SOCKET_PORT = 1942
 
+    THROTTLED = False
     WIDTH, HEIGHT = 292, 240 # screen pixel dimensions  
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. 
-    READY_UP_FRAMES = 200
+    READY_UP_FRAMES = 500
     MAME_EXE = '' # full path to mame executable if not './mame'. it must have access to joust rom
 
     P1_LIVES_ADDR = 0xA052
@@ -20,7 +20,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     # P2_SCORE_ADDR = 0xA058
  
     init_inputs_lua = (
-        "wait   = emu.wait_next_frame; "
+        "wait   = emu.wait_next_update; "
         "iop    = manager.machine.ioport.ports; "
         "inp1   = iop[':INP1'].fields; "
         "in2    = iop[':IN2'].fields; "
@@ -33,7 +33,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         "center = function()    inp1['P1 Left']:set_value(0); inp1['P1 Right']:set_value(0) end; "
     )
 
-    COIN_TAP    = "coin(1); wait(); wait(); coin(0); "
+    COIN_TAP    = "coin(1); wait(); wait(); "#coin(0); " # TODO for some reason, coin(0) disables start(1)??
     START_TAP   = "start(1); wait(); wait(); start(0); "
 
     FLAP        = "flap(1); wait(); flap(0); "
@@ -49,8 +49,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     # advanced actions for harder-to-learn fine control over flap press and release
     FLAP_ON         = "flap(1); "
     FLAP_OFF        = "flap(0); "
-    LEFT_FLAP_ON    = "left(); flap(1);"
-    RIGHT_FLAP_ON   = "right(); flap(1);"
+    LEFT_FLAP_ON    = "left(); flap(1); "
+    RIGHT_FLAP_ON   = "right(); flap(1); "
 
     # Define action space based on available inputs
     actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
@@ -75,11 +75,15 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                     "on_frame=emu.add_machine_frame_notifier(function() " # this runs once per frame
                         "cmd=sock:read(4096);" # read socket content and execute it. 4096 bytes should be enough? 
                         "if #cmd>0 then " # if anything was inbound
-                            "local ok,res=pcall(load(cmd)); " # run it and capture results
-                            "if res==nil then res=''; end; " # if no results, set to empty string
-                            "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
                             "print(cmd); "
-                            "sock:write(string.pack('<I4',#res)..(res or '')); " # write back results with 4-byte length prefix
+                            "local ok,res=pcall(load(cmd)); " # run it and capture results
+                            # "print(ok, res); "
+                            "if res==nil then res=''; end; " # if no results, set to empty string
+                            # "print('_')"
+                            "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
+                            # "print('_')"
+                            "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
+                            # "print('_')"
                         "end; "
                     "end); "
                     "print('listening...'); "
@@ -100,6 +104,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
             "s = manager.machine.screens:at(1); "
             "mem = manager.machine.devices[':maincpu'].spaces['program'] ; " 
             "vid = manager.machine.video; " 
+            "get8 = function(a) return mem:read_u8(a); end; "
+            "get32 = function(a) return mem:read_u32(a); end; "
+            "pack = string.pack; "
             "printt = function(t) for k,v in pairs(t) do print(k,v) end end; "
         )
         self._send_lua(self.init_globals_lua)
@@ -118,8 +125,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._send_lua( self.init_globals_lua ) 
         sleep(2)
         self._send_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
-        self._send_lua( self.COIN_TAP + self.START_TAP )# Insert coin and start game
-        self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_frame() end; emu.pause(); ")# Wait for play to start
+        self._send_lua( self.COIN_TAP + self.START_TAP) #self.COIN_TAP + self.START_TAP )# Insert coin and start game
+        self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_update() end; emu.pause(); ")# Wait for play to start
 
         self.last_score, self.last_lives = 0,0 # re-init 
 
@@ -135,10 +142,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
             print(input_lua) # debug
 
         lua_code = (
-            input_lua + "; emu.wait_next_frame(); emu.step(); "
-            f"lives = mem:read_u8({self.P1_LIVES_ADDR}); " # extract lives from memory
-            f"score = mem:read_u32({self.P1_SCORE_ADDR}); " # extract score
-            "return string.pack('>B I4', lives, score)  .. s:pixels() ; " # bitpak and return lives, score and screen pixels
+            input_lua + "; wait(); emu.step(); "
+            f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
+            "return pack('>B I4', lives, score)..s:pixels(); " # bitpak and return lives, score and screen pixels
         )
 
         response = self._send_lua(lua_code)
@@ -199,9 +205,19 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self.sock.sendall(lua_code.encode())
         len_bytes = self.sock.recv(4)
         len = struct.unpack('<I', len_bytes)[0]
-        ret = self.sock.recv(len)
+        ret = self.recv_all(len)
         return ret
     
+    def recv_all(self, expected_len):
+        data = b''
+        remaining = expected_len
+        while remaining > 0:
+            chunk = self.sock.recv(remaining)
+            if not chunk: raise ConnectionError("Could not receive expected data length")
+            data += chunk
+            remaining -= len(chunk)
+        return data
+
         
 
 # Example usage
@@ -216,7 +232,7 @@ if __name__ == "__main__":
         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
         action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         observation, reward, done, truncated, info = env.step(action)
-        # sleep(.5)
+        sleep(.5)
         
         if done or truncated:
             observation, info = env.reset()
