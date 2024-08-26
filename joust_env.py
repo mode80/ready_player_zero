@@ -11,7 +11,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     THROTTLED = False
     WIDTH, HEIGHT = 292, 240 # screen pixel dimensions  
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. 
-    READY_UP_FRAMES = 500
+    READY_UP_FRAMES = 250
     MAME_EXE = '' # full path to mame executable if not './mame'. it must have access to joust rom
 
     P1_LIVES_ADDR = 0xA052
@@ -35,6 +35,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     COIN_TAP    = "coin(1); wait(); wait(); "#coin(0); " # TODO for some reason, coin(0) disables start(1)??
     START_TAP   = "start(1); wait(); wait(); start(0); "
+    COIN_START  = "coin(1); emu.wait_next_frame(); emu.wait_next_frame(); coin(0); start(1); emu.wait_next_frame(); emu.wait_next_frame();  start(0); "
 
     FLAP        = "flap(1); wait(); flap(0); "
 
@@ -83,7 +84,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                             "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
                             # "print('_')"
                             "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
-                            # "print('_')"
+                            "print('_')"
                         "end; "
                     "end); "
                     "print('listening...'); "
@@ -93,7 +94,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         # launch MAME running Joust and Lua server script
         exec = self.MAME_EXE or os.path.join(os.path.dirname(__file__), 'mame', 'mame')
         self.mame = subprocess.Popen(
-            [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-pause_brightness', '1.0', '-autoboot_script', mini_server], 
+            [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-pause_brightness', '1.0', '-background_input', '-autoboot_script', mini_server], 
             cwd=os.path.dirname(exec),
         )
 
@@ -113,6 +114,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._send_lua(self.init_inputs_lua) # init Lua for inputs
         # self._init_frame_debug()
             
+
+            
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
@@ -125,13 +128,14 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._send_lua( self.init_globals_lua ) 
         sleep(2)
         self._send_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
-        self._send_lua( self.COIN_TAP + self.START_TAP) #self.COIN_TAP + self.START_TAP )# Insert coin and start game
-        self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_update() end; emu.pause(); ")# Wait for play to start
+        self._send_lua( self.COIN_START) #self.COIN_TAP + self.START_TAP) #self.COIN_TAP + self.START_TAP )# Insert coin and start game
+        self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_update() end; emu.step(); ")# Wait for play to start
 
         self.last_score, self.last_lives = 0,0 # re-init 
 
         observation, _, _, _, info = self.step() # step with no action to get initial state
         return observation, info
+
 
 
     def step(self, action_idx=None):
