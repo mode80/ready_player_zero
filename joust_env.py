@@ -20,7 +20,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     # P2_SCORE_ADDR = 0xA058
  
     init_inputs_lua = (
-        "wait   = emu.wait_next_update; "
+        "wait   = function() emu.wait_next_frame() end; " # does not work to assign wait=emu.wait_next_frame directly. also wait_next_frame works sometimes when wait_next_update doesn't (?) 
+        "waitu  = function() emu.wait_next_update() end; " # does not work to assign wait=emu.wait_next_frame directly. also wait_next_frame works sometimes when wait_next_update doesn't (?) 
         "iop    = manager.machine.ioport.ports; "
         "inp1   = iop[':INP1'].fields; "
         "in2    = iop[':IN2'].fields; "
@@ -33,11 +34,11 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         "center = function()    inp1['P1 Left']:set_value(0); inp1['P1 Right']:set_value(0) end; "
     )
 
-    COIN_TAP    = "coin(1); wait(); wait(); "#coin(0); " # TODO for some reason, coin(0) disables start(1)??
+    COIN_TAP    = "coin(1); wait(); wait(); coin(0); " 
     START_TAP   = "start(1); wait(); wait(); start(0); "
-    COIN_START  = "coin(1); emu.wait_next_frame(); emu.wait_next_frame(); coin(0); start(1); emu.wait_next_frame(); emu.wait_next_frame();  start(0); "
+    COIN_START  = COIN_TAP + START_TAP
 
-    FLAP        = "flap(1); wait(); flap(0); "
+    FLAP        = "inp1['P1 Button 1']:set_value(1); wait(); wait(); flap(0); "
 
     LEFT        = "left(); "
     RIGHT       = "right(); "
@@ -128,7 +129,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._send_lua( self.init_globals_lua ) 
         sleep(2)
         self._send_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
-        self._send_lua( self.COIN_START) #self.COIN_TAP + self.START_TAP) #self.COIN_TAP + self.START_TAP )# Insert coin and start game
+        self._send_lua(self.COIN_START) # Insert coin and start game
         self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_update() end; emu.step(); ")# Wait for play to start
 
         self.last_score, self.last_lives = 0,0 # re-init 
@@ -143,7 +144,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         input_lua=''
         if action_idx is not None: # 
             input_lua = self.actions[action_idx]
-            print(input_lua) # debug
+            # print(input_lua) # debug
 
         lua_code = (
             input_lua + "; wait(); emu.step(); "
