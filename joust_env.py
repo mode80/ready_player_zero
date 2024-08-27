@@ -20,8 +20,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     # P2_SCORE_ADDR = 0xA058
  
     init_inputs_lua = (
-        "wait   = function() emu.wait_next_frame() end; " # does not work to assign wait=emu.wait_next_frame directly. also wait_next_frame works sometimes when wait_next_update doesn't (?) 
-        "waitu  = function() emu.wait_next_update() end; " # does not work to assign wait=emu.wait_next_frame directly. also wait_next_frame works sometimes when wait_next_update doesn't (?) 
+        "wait   = function() emu.wait_next_frame() end; " # does not work to assign wait=emu.wait_next_frame directly. 
+        "waitup = function() emu.wait_next_update() end; " # wait_next_frame works sometimes when wait_next_update doesn't (?) 
         "iop    = manager.machine.ioport.ports; "
         "inp1   = iop[':INP1'].fields; "
         "in2    = iop[':IN2'].fields; "
@@ -38,7 +38,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     START_TAP   = "start(1); wait(); wait(); start(0); "
     COIN_START  = COIN_TAP + START_TAP
 
-    FLAP        = "inp1['P1 Button 1']:set_value(1); wait(); wait(); flap(0); "
+    FLAP        = "inp1['P1 Button 1']:set_value(1); wait();wait(); wait(); flap(0); " 
+    # flap animation is 69 steps() after flap(1) when there is no flap(0) release 
+    # otherwise 37 frames after flap release. animation starts on 3rd step after flap(1)   
 
     LEFT        = "left(); "
     RIGHT       = "right(); "
@@ -75,17 +77,21 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         script = ("sock=emu.file('rwc'); " # setup server-side TCP socket
                     "sock:open('socket.127.0.0.1:1942'); " # same hard-baked port used below
                     "on_frame=emu.add_machine_frame_notifier(function() " # this runs once per frame
-                        "cmd=sock:read(4096);" # read socket content and execute it. 4096 bytes should be enough? 
+                        "local cmd, chunk =''; "  # initialize command string vars
+                        "while true do "
+                            "chunk=sock:read(4096); " # check for inbound socket content 
+                            "cmd=cmd..chunk; " # append to command string
+                            "if #chunk < 4096 then break; end; " # if less than full read, assume no more data
+                        "end; " 
                         "if #cmd>0 then " # if anything was inbound
-                            "print(cmd); "
+                            # "print(cmd); "
                             "local ok,res=pcall(load(cmd)); " # run it and capture results
                             # "print(ok, res); "
-                            "if res==nil then res=''; end; " # if no results, set to empty string
+                            "if res~=nil then " # only reply if there are results
+                                "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
+                                "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
+                            "end ; "
                             # "print('_')"
-                            "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
-                            # "print('_')"
-                            "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
-                            "print('_')"
                         "end; "
                     "end); "
                     "print('listening...'); "
@@ -111,8 +117,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
             "pack = string.pack; "
             "printt = function(t) for k,v in pairs(t) do print(k,v) end end; "
         )
-        self._send_lua(self.init_globals_lua)
-        self._send_lua(self.init_inputs_lua) # init Lua for inputs
+        self._run_lua(self.init_globals_lua)
+        self._run_lua(self.init_inputs_lua) # init Lua for inputs
         # self._init_frame_debug()
             
 
@@ -120,17 +126,17 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
-        self._send_lua( "vid.throttled = false; ") # speed up coming boot sequence
-        self._send_lua("manager.machine:soft_reset(); ")# soft reset mame. (lua event loop survives but connection doesn't)
+        self._run_lua("vid.throttled = false; ") # speed up coming boot sequence
+        self._run_lua("manager.machine:soft_reset(); ")# soft reset mame. (lua event loop survives but connection doesn't)
 
         self._try_connect()
 
-        self._send_lua( self.init_inputs_lua ) 
-        self._send_lua( self.init_globals_lua ) 
-        sleep(2)
-        self._send_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
-        self._send_lua(self.COIN_START) # Insert coin and start game
-        self._send_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_update() end; emu.step(); ")# Wait for play to start
+        self._run_lua( self.init_inputs_lua )  # TODO needed?
+        self._run_lua( self.init_globals_lua ) 
+        sleep(2) # TODO needed?
+        self._run_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
+        self._run_lua(self.COIN_START) # Insert coin and start game
+        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_frame() end; emu.step(); ")# Wait for play to start
 
         self.last_score, self.last_lives = 0,0 # re-init 
 
@@ -152,10 +158,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
             "return pack('>B I4', lives, score)..s:pixels(); " # bitpak and return lives, score and screen pixels
         )
 
-        response = self._send_lua(lua_code)
+        response = self._run_lua_fn(lua_code, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
         lives, score = struct.unpack(">BI", response[:5])
-
-        #TODO handle partial updates?
 
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
         observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
@@ -172,7 +176,6 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         done = (lives == 0)
 
         # Update last score and lives
-
         self.last_score, self.last_lives = score, lives
 
         info = {'lives': lives, 'score': score}
@@ -194,7 +197,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                 "print(this_frame..':'..ponce) ; "
                 "end)"
         )
-        self._send_lua(frame_debug_lua)
+        self._run_lua(frame_debug_lua)
 
 
     def _try_connect(self):
@@ -205,13 +208,25 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                 self.sock.connect(('127.0.0.1', self.SOCKET_PORT)); break  # establish connection 
             except: sleep(0.1)
     
+    def _run_lua(self, lua):
+        # sends lua over for execution, without expecting or waiting for a response
+        self.sock.sendall(lua.encode())
 
-    def _send_lua(self, lua_code):
-        self.sock.sendall(lua_code.encode())
-        len_bytes = self.sock.recv(4)
-        len = struct.unpack('<I', len_bytes)[0]
-        ret = self.recv_all(len)
-        return ret
+    def _run_lua_fn(self, lua, expected_len=None):
+        # sends lua for execution and waits for the (length prefixed) response once it completes
+        self.sock.sendall(lua.encode())
+        if expected_len is 0: return # server is configured to not respond with 0-length messages
+        len = expected_len # init 
+        if len is None: # if expected response length was unsuplied we need to spend a rountrip to check it
+            len_encoded = self.sock.recv(4) # this blocks until 4-byte encoded len value is received
+            len = struct.unpack('<I', len_encoded)[0] # this first recv will be how many bytes the coming main response will be
+        else:
+            len = expected_len + 4 # add 4 bytes for the length prefix
+        ret = self.recv_all(len) # this blocks until -all- len bytes are received
+        if expected_len is None: 
+            return ret 
+        else:
+            return ret[4:] # strip off the 4-byte length prefix before returning 
     
     def recv_all(self, expected_len):
         data = b''
@@ -237,9 +252,12 @@ if __name__ == "__main__":
         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
         action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.5)
+        # sleep(.5)
         
         if done or truncated:
             observation, info = env.reset()
         
     env.close()
+
+# TODO commit 58cbda8481a3cd6b7cd57e12a6efe7f6623e8031 might be better since every lua command was synchronous (more consistency)
+# so far neither approach makes jump work :/
