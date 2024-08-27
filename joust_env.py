@@ -4,6 +4,8 @@ import numpy as np
 import os, subprocess, struct, socket, tempfile
 
 
+###########################################################################################################################
+
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
@@ -11,7 +13,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     THROTTLED = False
     WIDTH, HEIGHT = 292, 240 # screen pixel dimensions  
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. 
-    READY_UP_FRAMES = 250
+    READY_UP_FRAMES = 200
     MAME_EXE = '' # full path to mame executable if not './mame'. it must have access to joust rom
 
     P1_LIVES_ADDR = 0xA052
@@ -22,6 +24,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     init_inputs_lua = ("""
         wait   = function() emu.wait_next_frame() end;
         waitup = function() emu.wait_next_update() end;
+        swait  = function() emu.step(); emu.wait_next_frame() end; 
         iop    = manager.machine.ioport.ports; 
         inp1   = iop[':INP1'].fields; 
         in2    = iop[':IN2'].fields; 
@@ -38,7 +41,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     START_TAP   = "start(1); wait(); wait(); start(0); "
     COIN_START  = COIN_TAP + START_TAP
 
-    FLAP        = "flap(1); wait(); wait(); wait(); flap(0); " 
+    FLAP        = "flap(1); swait(); flap(0); " 
     # flap animation is 69 steps() after flap(1) when there is no flap(0) release 
     # otherwise 37 frames after flap release. animation starts on 3rd step after flap(1)   
 
@@ -57,7 +60,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     RIGHT_FLAP_ON   = "right(); flap(1); "
 
     # Define action space based on available inputs
-    actions = [CENTER, FLAP_ON, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
+    actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, FLAP_CENTER] # more complex
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, FLAP_CENTER, FLAP_PRESS, FLAP_RELEASE, LEFT_FLAP_PRESS, RIGHT_FLAP_PRESS] # most
     action_space = gym.spaces.Discrete(4)  
@@ -68,9 +71,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     render_mode = None 
     reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
 
-
-
-
+    ###########################################################################################################################
 
     def __init__(self):
         super().__init__()
@@ -91,10 +92,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                             "print(cmd); "
                             "local ok,res=pcall(load(cmd)); " # run it and capture results
                             # "print(ok, res); "
-                            "if res~=nil then " # only reply if there are results
-                                "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
-                                "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
-                            "end ; "
+                            "if res==nil then res=''; end; " # if no results, set to empty string
+                            "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
+                            "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
                             # "print('_')"
                         "end; "
                     "end); "
@@ -123,12 +123,10 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         """)
         self._run_lua(self.init_globals_lua)
         self._run_lua(self.init_inputs_lua) # init Lua for inputs
-        # self._init_frame_debug()
+        self._init_frame_debug()
             
+    ###########################################################################################################################
 
-
-
-            
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
@@ -142,56 +140,46 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         sleep(2) # TODO needed?
         self._run_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
         self._run_lua(self.COIN_START) # Insert coin and start game
-        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do emu.wait_next_frame() end; emu.step(); ")# Wait for play to start
+        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do wait() end; emu.step(); ")# Wait for play to start
 
         self.last_score, self.last_lives = 0,0 # re-init 
 
         observation, _, _, _, info = self.step() # step with no action to get initial state
         return observation, info
 
-
-
-
+    ###########################################################################################################################
 
     def step(self, action_idx=None):
 
-        input_lua=''
-        if action_idx is not None: # 
-            input_lua = self.actions[action_idx]
-            # print(input_lua) # debug
-
-        lua_code = (
-            input_lua + "; wait(); wait(); emu.step(); "
-            # f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
-            # "return pack('>B I4', lives, score)..s:pixels(); " # bitpak and return lives, score and screen pixels
-        )
-
-        response = self._run_lua(lua_code)#, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
-        # lives, score = struct.unpack(">BI", response[:5])
+        input_lua = self.actions[action_idx]    if action_idx is not None else ''   
+        lua = ( 
+            input_lua + "; swait(); "
+            f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
+            "return pack('>B I4', lives, score)..s:pixels(); ") # bitpak and return lives, score and screen pixels
+        response = self._run_lua(lua, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
+        lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
 
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
-        # observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
+        observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
         # then convert to grayscale and normalize to range of [0, 1]
-        # observation = np.mean(observation, axis=-1) / 255.0
+        observation = np.mean(observation, axis=-1) / 255.0
 
         # Calculate reward
-        # score_diff = score - self.last_score
-        # lives_diff = lives - self.last_lives
-        # reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
-        # if lives_diff < 0: reward = -1.0  # Penalty for losing a life
+        score_diff = score - self.last_score
+        lives_diff = lives - self.last_lives
+        reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
+        if lives_diff < 0: reward = -1.0  # Penalty for losing a life
         
         # Check if done
-        # done = (lives == 0)
+        done = (lives == 0)
 
         # Update last score and lives
-        # self.last_score, self.last_lives = score, lives
+        self.last_score, self.last_lives = score, lives
 
-        # info = {'lives': lives, 'score': score}
-        # return observation, reward, done, False, info
-        return response, 0, False, False, {}
+        info = {'lives': lives, 'score': score}
+        return observation, reward, done, False, info
 
-
-
+    ###########################################################################################################################
 
     def close(self):
         if self.sock: self.sock.close()
@@ -220,27 +208,20 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                 self.sock.connect(('127.0.0.1', self.SOCKET_PORT)); break  # establish connection 
             except: sleep(0.1)
     
-    def _run_lua(self, lua):
-        # sends lua over for execution, without expecting or waiting for a response
-        self.sock.sendall(lua.encode())
-
-    def _run_lua_fn(self, lua, expected_len=None):
+    def _run_lua(self, lua, expected_len=None):
         # sends lua for execution and waits for the (length prefixed) response once it completes
         self.sock.sendall(lua.encode())
-        if expected_len == 0: return # server is configured to not respond with 0-length messages
         len = expected_len # init 
         if len is None: # if expected response length was unsuplied we need to spend a rountrip to check it
-            len_encoded = self.sock.recv(4) # this blocks until 4-byte encoded len value is received
+            len_encoded = self.sock.recv(4) # this blocks until server code runs fully and 4-byte encoded len value is received
             len = struct.unpack('<I', len_encoded)[0] # this first recv will be how many bytes the coming main response will be
         else:
-            len = expected_len + 4 # add 4 bytes for the length prefix
-        ret = self.recv_all(len) # this blocks until -all- len bytes are received
-        if expected_len is None: 
-            return ret 
-        else:
-            return ret[4:] # strip off the 4-byte length prefix before returning 
+            len = expected_len + 4 # extra 4 bytes accomodates the length prefix
+        ret = self.recv_all(len) # this blocks execution until all the bytes of 'len' length are received or errors trying
+        return ret if expected_len is None else ret[4:] # strip off the 4-byte length prefix before returning as needed
     
     def recv_all(self, expected_len):
+        # receive all expected bytes of expected_len from the socket
         data = b''
         remaining = expected_len
         while remaining > 0:
@@ -251,6 +232,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         return data
 
         
+###########################################################################################################################
 
 # Example usage
 if __name__ == "__main__":
@@ -264,7 +246,7 @@ if __name__ == "__main__":
         action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.1)
+        # sleep(.5)
         
         if done or truncated:
             observation, info = env.reset()
