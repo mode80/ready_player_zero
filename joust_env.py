@@ -10,6 +10,7 @@ import os, subprocess, struct, socket
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
+    FRAMES_PER_STEP = 4 # Joust inputs can take 4 frames to affect the display output, so we don't sample faster than this
 
     THROTTLED = False 
     WIDTH, HEIGHT = 292, 240 # screen pixel dimensions  
@@ -66,7 +67,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     action_space = gym.spaces.Discrete(len(actions))  
 
     # pixels should be normalized to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
-    observation_space = gym.spaces.Box(low=0, high=255, shape=(HEIGHT,WIDTH,3), dtype=np.uint8)
+    observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(HEIGHT//2,WIDTH//2), dtype=np.float32)
 
     render_mode = None 
     reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
@@ -87,7 +88,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                             "if #chunk < 4096 then break; end; " # if less than full read, assume no more data
                         "end; " 
                         "if #cmd>0 then " # if anything was inbound
-                            # "print(cmd); "
+                            "print(cmd); "
                             "local ok,res=pcall(load(cmd)); " # run it and capture results
                             # "print(ok, res); "
                             "if res==nil then res=''; end; " # if no results, set to empty string
@@ -117,9 +118,13 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
             pack = string.pack; 
             printt = function(t) for k,v in pairs(t) do print(k,v) end end; 
         """)
+        # init vars for tracking "last_state" values
+        self.last_score, self.last_lives = 0,0 
+        self.last_observation = np.zeros(self.observation_space.shape, dtype=np.float32) 
         self._run_lua(self.init_globals_lua)
         self._run_lua(self.init_inputs_lua) # init Lua for inputs
         # self._init_frame_debug()
+
             
     ####################################################################################################################
 
@@ -135,8 +140,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._run_lua( f"vid.throttled = {str(self.THROTTLED).lower()}; " )# Set throttle back to default
         self._run_lua(self.COIN_START) # Insert coin and start game
         self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do wait() end; emu.step(); ")# Wait for play to start
-        self.last_score, self.last_lives = 0,0 # re-init these
-        observation, _, _, _, info = self.step() # step with no action to get initial state
+        observation, _, _, _, info = self.step() # step with no action to get initial state and set initial last_values
         return observation, info
 
     ####################################################################################################################
@@ -144,24 +148,28 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     def step(self, action_idx=None):
         # overrides the mandatory gym.Env step() method for Joust
         input_lua = self.actions[action_idx]    if action_idx is not None else ''   
-        lua = ( input_lua + "; swait(); "
+        lua = ( input_lua + 
+            " swait(); " * self.FRAMES_PER_STEP +
             f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
             "return pack('>B I4', lives, score)..s:pixels(); ") # bitpak and return lives, score and screen pixels
         response = self._run_lua(lua, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
         lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
         observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
-        # then convert to grayscale 
-        # observation = np.mean(observation, axis=-1, dtype=np.float32) / 255.0  # Convert to grayscale and normalize
+        # downsample to half the resolution
+        observation = observation[::2, ::2, :]
+        # Convert to grayscale and normalize to -1, 1 as float 32
+        observation = np.mean(observation, axis=2, keepdims=True).astype(np.float32) / 128.0 - 1.0
         # Calculate reward, done status, info then return with observation 
         score_diff = score - self.last_score
         lives_diff = lives - self.last_lives
         reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
         if lives_diff < 0: reward = -1.0  # Penalty for losing a life
         done = (lives == 0)
-        self.last_score, self.last_lives = score, lives# Update last score and lives
+        self.last_observation, self.last_score, self.last_lives = observation, score, lives # track last values 
+        truncated = False
         info = {'lives': lives, 'score': score}
-        return observation, reward, done, False, info
+        return observation, reward, done, truncated, info
 
     ####################################################################################################################
 
@@ -216,20 +224,21 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         
 ########################################################################################################################
 
-# # Example usage
-# if __name__ == "__main__":
-#     env = MinJoustEnv()
-#     env.reset()
+# Example usage
+if __name__ == "__main__":
+    env = MinJoustEnv()
+    env.reset()
 
-#     for _ in range(10000): 
-#         action = env.action_space.sample()  # Random action
-#         # action = [0,0,2,2,3,3,1,2,3,4,5,6][randint(0,11)]
-#         # 10-steps to reverse direction in place. 5 steps after the 1st animates
-#         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
-#         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
-#         observation, reward, done, truncated, info = env.step(action)
-#         # sleep(.5)
+    for _ in range(10000): 
+        action = env.action_space.sample()  # Random action
+        # action = [0,0,2,2,3,3,1,2,3,4,5,6][randint(0,11)]
+        # 10-steps to reverse direction in place. 5 steps after the 1st animates
+        # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
+        # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
+        # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
+        observation, reward, done, truncated, info = env.step(action)
+        sleep(1.0)
         
-#         if done or truncated:
-#             observation, info = env.reset()
+        if done or truncated:
+            observation, info = env.reset()
         
