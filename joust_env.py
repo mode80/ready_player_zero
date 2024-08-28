@@ -1,11 +1,13 @@
+#%%#####################################################################################################################
 from random import randint
 from time import sleep
 import gymnasium as gym
 import numpy as np
 import os, subprocess, struct, socket
+import matplotlib.pyplot as plt
 
 
-########################################################################################################################
+#%%#####################################################################################################################
 
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
@@ -66,8 +68,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP, FLAP_ON, FLAP_OFF, LEFT_FLAP_ON, RIGHT_FLAP_ON] # most
     action_space = gym.spaces.Discrete(len(actions))  
 
-    # pixels should be normalized to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
-    observation_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(HEIGHT//2,WIDTH//2), dtype=np.float32)
+    # pixels should be be normalized to [-1.0, 1.0] in a wrapper or e.g. CnnPolicy of https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
+    observation_space = gym.spaces.Box(low=0, high=255, shape=(3,HEIGHT//2,WIDTH//2), dtype=np.uint8)
 
     render_mode = None 
     reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
@@ -120,7 +122,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         """)
         # init vars for tracking "last_state" values
         self.last_score, self.last_lives = 0,0 
-        self.last_observation = np.zeros(self.observation_space.shape, dtype=np.float32) 
+        self.pixel_history = np.zeros(self.observation_space.shape, dtype=np.uint8)
         self._run_lua(self.init_globals_lua)
         self._run_lua(self.init_inputs_lua) # init Lua for inputs
         # self._init_frame_debug()
@@ -140,8 +142,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._run_lua( f"vid.throttled = {str(self.THROTTLED).lower()}; " )# Set throttle back to default
         self._run_lua(self.COIN_START) # Insert coin and start game
         self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do wait() end; emu.step(); ")# Wait for play to start
-        observation, _, _, _, info = self.step() # step with no action to get initial state and set initial last_values
-        return observation, info
+        pixel_history, _, _, _, info = self.step() # step with no action to get initial state and set initial last_values
+        self.pixel_history[1:,:,:] = pixel_history[0,:,:] # copy this 1st frame to 'historical' frames to indicate no motion)
+        return self.pixel_history, info
 
     ####################################################################################################################
 
@@ -155,23 +158,57 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         response = self._run_lua(lua, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
         lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
-        observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
+        pixels = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
         # downsample to half the resolution
-        observation = observation[::2, ::2, :]
-        # Convert to grayscale and normalize to -1, 1 as float 32
-        observation = np.mean(observation, axis=2, keepdims=True).astype(np.float32) / 128.0 - 1.0
+        pixels = pixels[::2, ::2, :]
+        # Move chanels to first dimension, per convention
+        pixels = np.moveaxis(pixels, -1, 0) #shape is now (1, 120, 146)
+        # Convert to grayscale 
+        pixels = np.mean(pixels, axis=0).astype(np.uint8) 
         # Calculate reward, done status, info then return with observation 
         score_diff = score - self.last_score
         lives_diff = lives - self.last_lives
         reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
         if lives_diff < 0: reward = -1.0  # Penalty for losing a life
         done = (lives == 0)
-        self.last_observation, self.last_score, self.last_lives = observation, score, lives # track last values 
+        # track last values 
+        self.pixel_history = np.roll(self.pixel_history, 1, axis=0)  # cycle 'channel' from [old, older, oldest] to [oldest, old, older]
+        self.pixel_history[0] = pixels # replace oldest with current observation
         truncated = False
         info = {'lives': lives, 'score': score}
-        return observation, reward, done, truncated, info
+        return self.pixel_history, reward, done, truncated, info
 
     ####################################################################################################################
+
+    def render(self, mode='rgb_array'):
+        if mode == 'rgb_array':
+            return np.transpose(self.pixel_history, (1, 2, 0))  # return last 3 frames as a single 'color-coded' image of motion
+        elif mode == 'human':
+            if not hasattr(self, 'fig'):
+                plt.ion()  # Turn on interactive mode
+                self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(12, 5))
+                self.fig.suptitle('MinJoustEnv Visualization')
+                
+            # Display the current frame
+            self.ax1.clear()
+            self.ax1.imshow(self.pixel_history[0], cmap='gray')
+            self.ax1.set_title('Current Frame')
+            self.ax1.axis('off')
+            
+            # Display the motion history
+            motion_history = np.transpose(self.pixel_history, (1, 2, 0))
+            self.ax2.clear()
+            self.ax2.imshow(motion_history)
+            self.ax2.set_title('Motion History (Last 3 Frames)')
+            self.ax2.axis('off')
+            
+            # Add text with current game info
+            info_text = f"Lives: {self.last_lives}\nScore: {self.last_score}"
+            self.fig.text(0.02, 0.02, info_text, verticalalignment='bottom')
+            
+            plt.draw()
+            plt.pause(0.001)  # Small pause to update the plot
+
 
     def _init_frame_debug(self):
         # optional code for printing frame number and pause count as they happen
@@ -222,7 +259,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         return data
 
         
-########################################################################################################################
+#%%#######################################################################################################################
 
 # Example usage
 if __name__ == "__main__":
@@ -237,8 +274,9 @@ if __name__ == "__main__":
         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
         observation, reward, done, truncated, info = env.step(action)
-        sleep(1.0)
+        env.render(mode:='human')
         
         if done or truncated:
             observation, info = env.reset()
         
+# %%
