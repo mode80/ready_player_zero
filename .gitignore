@@ -9,3 +9,4 @@ venv/
 *.log
 *.tmp
 mini_server.lua
+*.zip
