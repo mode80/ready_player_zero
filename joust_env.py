@@ -5,7 +5,7 @@ import gymnasium as gym
 import numpy as np
 import os, subprocess, struct, socket
 import matplotlib.pyplot as plt
-
+import skimage.measure
 
 #%%#####################################################################################################################
 
@@ -13,6 +13,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
     FRAMES_PER_STEP = 4 # Joust inputs can take 4 frames to affect the display output, so we don't sample faster than this
+    DOWNSCALE = 1 # Downscale the image by a wholenumber factor > 1 to speed up training
 
     THROTTLED = False 
     WIDTH, HEIGHT = 292, 240 # screen pixel dimensions  
@@ -69,7 +70,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     action_space = gym.spaces.Discrete(len(actions))  
 
     # pixels should be be normalized to [-1.0, 1.0] in a wrapper or e.g. CnnPolicy of https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
-    observation_space = gym.spaces.Box(low=0, high=255, shape=(3,HEIGHT//2,WIDTH//2), dtype=np.uint8)
+    observation_space = gym.spaces.Box(low=0, high=255, shape=(3,HEIGHT//DOWNSCALE,WIDTH//DOWNSCALE), dtype=np.uint8)
 
     render_mode = None 
     reward_range = (-1.0, 1.0) # (-float("inf"), float("inf"))
@@ -155,16 +156,17 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
             " swait(); " * self.FRAMES_PER_STEP +
             f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
             "return pack('>B I4', lives, score)..s:pixels(); ") # bitpak and return lives, score and screen pixels
-        response = self._run_lua(lua, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
+        response = self._run_lua(lua, expected_len=5+self.HEIGHT*self.WIDTH*4) # 5 bytes for lives, score; height*widght*channels for pixels
         lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
-        pixels = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
-        # downsample to half the resolution
-        pixels = pixels[::2, ::2, :]
+        pixels = np.frombuffer(response[5:], dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1] 
+        # downsample to half the resolution in a sophisticated way 
+        # pixels = pixels[::self.DOWNSCALE, ::self.DOWNSCALE, :]
+        pixels =skimage.measure.block_reduce(pixels, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # shape is now (h',w',1):
         # Move chanels to first dimension, per convention
-        pixels = np.moveaxis(pixels, -1, 0) #shape is now (1, 120, 146)
+        pixels = np.moveaxis(pixels, -1, 0) #shape is now (1,h,w)
         # Convert to grayscale 
-        pixels = np.mean(pixels, axis=0).astype(np.uint8) 
+        # pixels = np.mean(pixels, axis=0).astype(np.uint8) 
         # Calculate reward, done status, info then return with observation 
         score_diff = score - self.last_score
         lives_diff = lives - self.last_lives
