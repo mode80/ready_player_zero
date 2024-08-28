@@ -409,24 +409,6 @@ class JoustEnv(gym.Env):
     #     """
     #     return self.client.execute(lua_script)
 
-# def sample_PPO():
-#     from stable_baselines3 import PPO
-
-#     env = JoustEnv()
-#     model = PPO("CnnPolicy", env, verbose=1)
-#     model.learn(total_timesteps=100000)
-
-#     # Test the trained model
-#     obs, _ = env.reset()
-#     for _ in range(1000):
-#         action, _states = model.predict(obs, deterministic=True)
-#         obs, reward, done, truncated, info = env.step(action)
-#         if done or truncated:
-#             obs, _ = env.reset()
-
-#     env.close()
-
-
 # Example usage
 if __name__ == "__main__":
     env = JoustEnv()
