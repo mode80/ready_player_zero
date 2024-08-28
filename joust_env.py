@@ -1,7 +1,8 @@
-from time import sleep, time
+from random import randint
+from time import sleep
 import gymnasium as gym
 import numpy as np
-import os, subprocess, struct, socket, tempfile
+import os, subprocess, struct, socket
 
 
 ###########################################################################################################################
@@ -10,7 +11,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
 
-    THROTTLED = False
+    THROTTLED = True 
     WIDTH, HEIGHT = 292, 240 # screen pixel dimensions  
     MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. 
     READY_UP_FRAMES = 200
@@ -18,10 +19,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     P1_LIVES_ADDR = 0xA052
     P1_SCORE_ADDR = 0xA04C
-    # P2_LIVES_ADDR = 0xA05C
-    # P2_SCORE_ADDR = 0xA058
  
-    init_inputs_lua = ("""
+    init_inputs_lua = ( # wait, waitup and, swait each work better in different contects when contructing inputs
+    """ 
         wait   = function() emu.wait_next_frame() end;
         waitup = function() emu.wait_next_update() end;
         swait  = function() emu.step(); emu.wait_next_frame() end; 
@@ -61,9 +61,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     # Define action space based on available inputs
     actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
-    # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, FLAP_CENTER] # more complex
-    # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, FLAP_CENTER, FLAP_PRESS, FLAP_RELEASE, LEFT_FLAP_PRESS, RIGHT_FLAP_PRESS] # most
-    action_space = gym.spaces.Discrete(4)  
+    # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP] # more complex
+    # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP, FLAP_ON, FLAP_OFF, LEFT_FLAP_ON, RIGHT_FLAP_ON] # most
+    action_space = gym.spaces.Discrete(len(actions))  
 
     # pixels normalized to [0, 1] per https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
     observation_space = gym.spaces.Box(low=0, high=1.0, shape=(HEIGHT,WIDTH), dtype=np.float32)
@@ -75,12 +75,10 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     def __init__(self):
         super().__init__()
-
         #prep minimalist Lua server (via transient lua file for Windows compatibility)
-        # temp = tempfile.NamedTemporaryFile(mode='w', suffix='.lua')  
         mini_server = os.path.join(os.path.dirname(__file__), 'mini_server.lua')
         script = ("sock=emu.file('rwc'); " # setup server-side TCP socket
-                    "sock:open('socket.127.0.0.1:1942'); " # same hard-baked port used below
+                    f"sock:open('socket.127.0.0.1:{self.SOCKET_PORT}'); " # open TCP port 
                     "on_frame=emu.register_frame_done(function() " # this runs once per frame
                         "local cmd, chunk =''; "  # initialize command string vars
                         "while true do "
@@ -94,24 +92,22 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                             # "print(ok, res); "
                             "if res==nil then res=''; end; " # if no results, set to empty string
                             "if type(res)~= 'string' then res=tostring(res); end; " # convert to byte string
-                            "sock:write(string.pack('<I4',#res)..res); " # write back results with 4-byte length prefix
+                            "sock:write(string.pack('<I4',#res)..res); " # write back results with a 4-byte length prefix
                             # "print('_')"
                         "end; "
                     "end); "
-                    "print('listening...'); "
+                    f"print('Listening on port {self.SOCKET_PORT}...'); "
                 )
         open(mini_server, 'w').write(script)
-
-        # launch MAME running Joust and Lua server script
+        # launch MAME running Joust and above Lua server script
         exec = self.MAME_EXE or os.path.join(os.path.dirname(__file__), 'mame', 'mame')
         self.mame = subprocess.Popen(
             [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-pause_brightness', '1.0', '-background_input', '-autoboot_script', mini_server], 
             cwd=os.path.dirname(exec),
         )
-
-        self._try_connect()
-
-        # init Lua environment
+        # try connecting python as a client to the MAME lua server
+        self._try_connect() 
+        # init Lua environment globals etc from here
         self.init_globals_lua = (""" 
             s = manager.machine.screens:at(1); 
             mem = manager.machine.devices[':maincpu'].spaces['program'] ;  
@@ -128,62 +124,46 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     ###########################################################################################################################
 
     def reset(self, seed=None, options=None):
+        # override the mandatory gym.Env reset() method for Joust
         super().reset(seed=seed)
-
         self._run_lua("vid.throttled = false; ") # speed up coming boot sequence
         self._run_lua("manager.machine:soft_reset(); ")# soft reset mame. (lua event loop survives but connection doesn't)
-
         self._try_connect()
-
-        self._run_lua( self.init_inputs_lua )  # TODO needed?
+        self._run_lua( self.init_inputs_lua ) 
         self._run_lua( self.init_globals_lua ) 
-        sleep(2) # TODO needed?
-        self._run_lua( f"vid.throttled = true ") #{str(self.THROTTLED).lower()}; " )# Set throttle back to default
+        sleep(2) # let boot sequence playout while still unthrolled
+        self._run_lua( f"vid.throttled = {str(self.THROTTLED).lower()}; " )# Set throttle back to default
         self._run_lua(self.COIN_START) # Insert coin and start game
         self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do wait() end; emu.step(); ")# Wait for play to start
-
-        self.last_score, self.last_lives = 0,0 # re-init 
-
+        self.last_score, self.last_lives = 0,0 # re-init these
         observation, _, _, _, info = self.step() # step with no action to get initial state
         return observation, info
 
     ###########################################################################################################################
 
     def step(self, action_idx=None):
-
+        # overrides the mandatory gym.Env step() method for Joust
         input_lua = self.actions[action_idx]    if action_idx is not None else ''   
-        lua = ( 
-            input_lua + "; swait(); "
+        lua = ( input_lua + "; swait(); "
             f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
             "return pack('>B I4', lives, score)..s:pixels(); ") # bitpak and return lives, score and screen pixels
         response = self._run_lua(lua, expected_len=5+240*292*4) # 5 bytes for lives, score; 240*292*4 for pixels
         lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
-
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
         observation = np.frombuffer(response[5:], dtype=np.uint8).reshape((240, 292, 4))[:,:,2::-1] 
         # then convert to grayscale and normalize to range of [0, 1]
         observation = np.mean(observation, axis=-1) / 255.0
-
-        # Calculate reward
+        # Calculate reward, done status, info then return with observation 
         score_diff = score - self.last_score
         lives_diff = lives - self.last_lives
         reward = score_diff / self.MAX_SCORE_DIFF  # Normalize score difference
         if lives_diff < 0: reward = -1.0  # Penalty for losing a life
-        
-        # Check if done
         done = (lives == 0)
-
-        # Update last score and lives
-        self.last_score, self.last_lives = score, lives
-
+        self.last_score, self.last_lives = score, lives# Update last score and lives
         info = {'lives': lives, 'score': score}
         return observation, reward, done, False, info
 
     ###########################################################################################################################
-
-    def close(self):
-        if self.sock: self.sock.close()
-        if self.mame: self.mame.kill()  # try terminate()?
 
     def _init_frame_debug(self):
         # optional code for printing frame number and pause count as they happen
@@ -200,16 +180,17 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._run_lua(frame_debug_lua)
 
 
-    def _try_connect(self):
-        # connect python gym env as client
-        for _ in range(200): # try to connect to MAME for 20 secs or so while it starts up
+    def _try_connect(self, tries=200, per_try_delay=0.1):
+        # connect python gym env as client to MAME Lua server
+        for _ in range(tries): # try to connect to MAME for 20 secs or so while it starts up
             try: 
                 self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # setup client side TCP socket 
                 self.sock.connect(('127.0.0.1', self.SOCKET_PORT)); break  # establish connection 
-            except: sleep(0.1)
+            except: sleep(per_try_delay); continue
     
+
     def _run_lua(self, lua, expected_len=None):
-        # sends lua for execution and waits for the (length prefixed) response once it completes
+        # sends Lua code for execution and waits for its (length prefixed) response once it completes
         self.sock.sendall(lua.encode())
         len = expected_len # init 
         if len is None: # if expected response length was unsuplied we need to spend a rountrip to check it
@@ -220,6 +201,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         ret = self.recv_all(len) # this blocks execution until all the bytes of 'len' length are received or errors trying
         return ret if expected_len is None else ret[4:] # strip off the 4-byte length prefix before returning as needed
     
+
     def recv_all(self, expected_len):
         # receive all expected bytes of expected_len from the socket
         data = b''
@@ -240,10 +222,10 @@ if __name__ == "__main__":
     env.reset()
 
     for _ in range(10000): 
-        # action = env.action_space.sample()  # Random action
+        action = env.action_space.sample()  # Random action
         # action = [0,0,2,2,3,3,1,2,3,4,5,6][randint(0,11)]
         # 10-steps to reverse direction in place. 5 steps after the 1st animates
-        action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
+        # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         observation, reward, done, truncated, info = env.step(action)
         # sleep(.5)
@@ -251,7 +233,3 @@ if __name__ == "__main__":
         if done or truncated:
             observation, info = env.reset()
         
-    env.close()
-
-# TODO commit 58cbda8481a3cd6b7cd57e12a6efe7f6623e8031 might be better since every lua command was synchronous (more consistency)
-# so far neither approach makes jump work :/
