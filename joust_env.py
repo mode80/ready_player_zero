@@ -4,7 +4,7 @@ from time import sleep
 import gymnasium as gym
 import numpy as np
 import os, subprocess, struct, socket
-import matplotlib.pyplot as plt
+import pygame
 import skimage.measure
 
 #%%#####################################################################################################################
@@ -79,7 +79,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     ####################################################################################################################
 
-    def __init__(self):
+    def __init__(self, render_mode=None):
         super().__init__()
         #prep minimalist Lua server (via transient lua file for Windows compatibility)
         mini_server = os.path.join(os.path.dirname(__file__), 'mini_server.lua')
@@ -129,6 +129,15 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self._run_lua(self.init_globals_lua)
         self._run_lua(self.init_inputs_lua) # init Lua for inputs
         self._init_frame_debug() if self.DEBUG_OUTPUT > 1 else None
+        # for rendering 
+        if self.render_mode == 'human':
+            pygame.init()
+            self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+            pygame.display.set_caption('Env Visualization')
+            self.clock = pygame.time.Clock()
+            self.surface = pygame.Surface((self.HEIGHT, self.WIDTH))
+            self.transform = pygame.transform.rotate( pygame.transform.flip(self.surface, False, True), 90)
+
 
             
     ####################################################################################################################
@@ -186,33 +195,36 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     ####################################################################################################################
 
+
     def render(self, mode=''):
         mode = self.render_mode if mode == '' else mode
         if mode == 'rgb_array':
             return np.transpose(self.pixel_history, (1, 2, 0))  # return last 3 frames as a single 'color-coded' image of motion
         elif mode == 'human':
-            if not hasattr(self, 'fig'):
-                plt.ion()  # Turn on interactive mode
-                self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(12, 5))
-                self.fig.suptitle('MinJoustEnv Visualization')
-            # Display the current frame
-            self.ax1.clear()
-            self.ax1.imshow(self.pixel_history[0], cmap='gray')
-            self.ax1.set_title('Current Frame')
-            self.ax1.axis('off')
-            # Display the motion history
-            motion_history = np.transpose(self.pixel_history, (1, 2, 0))
-            self.ax2.clear()
-            self.ax2.imshow(motion_history)
-            self.ax2.set_title('Motion History (Last 3 Frames)')
-            self.ax2.axis('off')
-            # Add text with current game info
-            info_text = f"Lives: {self.last_lives}\nScore: {self.last_score}"
-            self.fig.text(0.02, 0.02, info_text, verticalalignment='bottom')
-            plt.draw()
-            plt.pause(0.001)  # Small pause to update the plot
-        else:
-            raise Exception("Unsupported render mode: " + mode)
+            SCALE = 4
+            if not hasattr(self, 'screen') or not pygame.get_init():  # Check if pygame is initialized
+                pygame.init()
+                self.screen = pygame.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE))
+                pygame.display.set_caption('MinJoustEnv Visualization')
+                self.clock = pygame.time.Clock()
+                self.font = pygame.font.Font(None, 24)
+                self.surface = pygame.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
+            try:
+                for event in pygame.event.get([pygame.QUIT]):  pygame.quit(); return  
+                pygame.surfarray.blit_array(self.surface, np.transpose(self.pixel_history, (1, 2, 0)))
+                rotated_surface = pygame.transform.rotate(self.surface, -90)
+                flipped_surface = pygame.transform.flip(rotated_surface, True, False)
+                scaled_surface = pygame.transform.scale(flipped_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
+                self.screen.blit(scaled_surface, (0, 0))
+                if not hasattr(self, 'last_text_surface') or self.last_text_surface_value != (self.last_lives, self.last_score):
+                    info_text = f"Lives: {self.last_lives} Score: {self.last_score}"
+                    self.last_text_surface = self.font.render(info_text, True, (255, 255, 255))
+                    self.last_text_surface_value = (self.last_lives, self.last_score)
+                self.screen.blit(self.last_text_surface, (10, 10))
+                pygame.display.flip()
+                self.clock.tick(60/self.FRAMES_PER_STEP)  # Limit FPS
+            except pygame.error:
+                pass  # Ignore errors after pygame.quit()
 
 
     def _init_frame_debug(self):
