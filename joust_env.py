@@ -201,8 +201,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         if mode == 'rgb_array':
             return np.transpose(self.pixel_history, (1, 2, 0))  # return last 3 frames as a single 'color-coded' image of motion
         elif mode == 'human':
-            SCALE = 4
-            if not hasattr(self, 'screen') or not pygame.get_init():  # Check if pygame is initialized
+            SCALE = 2
+            if not hasattr(self, 'screen') or not pygame.get_init():
                 pygame.init()
                 self.screen = pygame.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE))
                 pygame.display.set_caption('MinJoustEnv Visualization')
@@ -210,21 +210,20 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                 self.font = pygame.font.Font(None, 24)
                 self.surface = pygame.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
             try:
-                for event in pygame.event.get([pygame.QUIT]):  pygame.quit(); return  
+                for event in pygame.event.get([pygame.QUIT]): pygame.quit(); return
                 pygame.surfarray.blit_array(self.surface, np.transpose(self.pixel_history, (1, 2, 0)))
-                rotated_surface = pygame.transform.rotate(self.surface, -90)
-                flipped_surface = pygame.transform.flip(rotated_surface, True, False)
-                scaled_surface = pygame.transform.scale(flipped_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
+                transformed_surface = pygame.transform.flip(pygame.transform.rotate(self.surface, -90), True, False)
+                scaled_surface = pygame.transform.scale(transformed_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
                 self.screen.blit(scaled_surface, (0, 0))
-                if not hasattr(self, 'last_text_surface') or self.last_text_surface_value != (self.last_lives, self.last_score):
-                    info_text = f"Lives: {self.last_lives} Score: {self.last_score}"
-                    self.last_text_surface = self.font.render(info_text, True, (255, 255, 255))
+                if not hasattr(self, 'last_text_surface') or (self.last_lives, self.last_score) != self.last_text_surface_value:
+                    self.last_text_surface = self.font.render(f"Lives: {self.last_lives} Score: {self.last_score}", True, (255, 255, 255))
                     self.last_text_surface_value = (self.last_lives, self.last_score)
                 self.screen.blit(self.last_text_surface, (10, 10))
                 pygame.display.flip()
-                self.clock.tick(60/self.FRAMES_PER_STEP)  # Limit FPS
+                self.clock.tick(60/self.FRAMES_PER_STEP)
             except pygame.error:
-                pass  # Ignore errors after pygame.quit()
+                pass
+
 
 
     def _init_frame_debug(self):
@@ -285,11 +284,11 @@ if __name__ == "__main__":
     env.reset()
 
     for _ in range(10000): 
-        # action = env.action_space.sample()  # Random action
+        action = env.action_space.sample()  # Random action
         # action = [0,0,2,2,3,3,1,2,3,4,5,6][randint(0,11)]
         # 10-steps to reverse direction in place. 5 steps after the 1st animates
         # action = [2,2,0,0,3,3,0,0,2,2,0,0,3,3][_ % 14]
-        action = [2,2,0,0,3,3,0,0][_ % 8]
+        # action = [2,2,0,0,3,3,0,0][_ % 8]
         # action = [2,3,2,3,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]
         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
