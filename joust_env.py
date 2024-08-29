@@ -12,9 +12,9 @@ import skimage.measure
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
-    FRAMES_PER_STEP = 1 # Joust inputs can take 4 frames to affect the display output, so we don't sample faster than this
+    FRAMES_PER_STEP = 5 # Joust inputs can take _ frames to affect the display output, so we shouldn't sample faster than this
     DOWNSCALE = 2 # Downscale the image by this factor (> 1 to speed up training)
-    DEBUG_OUTPUT = 2 # Output debugging verbosity [0,1,2]
+    DEBUG_OUTPUT = 1 # Output debugging verbosity [0,1,2]
 
     THROTTLED = False 
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
@@ -26,10 +26,12 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     P1_SCORE_ADDR = 0xA04C
  
     init_inputs_lua = ( # wait, waitup and, swait each work better in different contexts when contructing inputs
-        "wait   = function() emu.wait_next_frame() end; " # gets us to the next emulated frame
-        "waitup = function() emu.wait_next_update() end; " # gets us to the next video frame (even when paused, affected by skips etc)
-        "swait  = function() emu.step(); emu.wait_next_frame() end; "
-        "swaitup= function() emu.step();emu.wait_next_update() end; "
+        "next   = function() emu.wait_next_frame();end; " # advances one frame and pause
+        "stop   = function() emu.step() end; " # gets us to the next emulated frame
+        "nextup = function() emu.wait_next_update() end; " # gets us to the next video frame (even when paused, affected by skips etc)
+        "snext  = function() emu.step(); emu.wait_next_frame() end; " # step and next
+        "nexts  = function() emu.wait_next_frame(); emu.step() end; " # next and step
+        "snextup= function() emu.step(); emu.wait_next_update() end; "
         """ 
         iop    = manager.machine.ioport.ports; 
         inp1   = iop[':INP1'].fields; 
@@ -37,38 +39,44 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         in0    = iop[':IN0'].fields; 
         coin   = function(v)   in2['Coin 1']:set_value(v) end; 
         start  = function(v)   in0['1 Player Start']:set_value(v); end; 
-        flap   = function(v)   inp1['P1 Button 1']:set_value(v) end; 
-        left   = function()    inp1['P1 Left']:set_value(1); inp1['P1 Right']:set_value(0) end; 
-        right  = function()    inp1['P1 Right']:set_value(1); inp1['P1 Left']:set_value(0) end; 
-        center = function()    inp1['P1 Left']:set_value(0); inp1['P1 Right']:set_value(0) end; 
+        flap   = function(v)  inp1['P1 Button 1']:set_value(v); end; 
+        left   = function(v)  inp1['P1 Right']:set_value(v); end; 
+        right  = function(v)  inp1['P1 Left']:set_value(v); end; 
         """)
 
-    COIN_TAP    = "coin(1); wait(); wait(); coin(0); " 
-    START_TAP   = "start(1); wait(); wait(); start(0); "
+    COIN_TAP    = "coin(1); next(); next(); coin(0); " 
+    START_TAP   = "start(1); next(); next(); start(0); "
     COIN_START  = COIN_TAP + START_TAP
 
-    FLAP            = "flap(1);swait();flap(0); " 
+    FLAP            = "flap(1); snext();flap(0);" 
+    FLAP_ON         = "flap(1);                 " 
+    FLAP_OFF        = "flap(0);                 " 
     # flap animation is 69 steps() after flap(1) when there is no flap(0) release 
     # otherwise 37 frames after flap release. animation starts on 3rd step after flap(1)   
 
-    LEFT            = "left();                  "
-    RIGHT           = "right();                 "
-    CENTER          = "center();                "
+    LEFT            = "left(1); right(0);       "
+    LEFT_ON         = "left(1);                 "
+    LEFT_OFF        = "left(0);                 "
+    RIGHT           = "right(1); left(0);       "
+    RIGHT_ON        = "right(1);                "
+    RIGHT_OFF       = "right(0);                "
+    CENTER          = "left(0); right(0);       "
+
+    FLAP_ON         = "flap(1);                 "
+    FLAP_OFF        = "flap(0);                 "
 
     LEFT_FLAP   = LEFT + FLAP
     RIGHT_FLAP  = RIGHT + FLAP
     CENTER_FLAP = CENTER + FLAP
 
-    # advanced actions for harder-to-learn fine control over flap press and release
-    FLAP_ON         = "flap(1);                 "
-    FLAP_OFF        = "flap(0);                 "
-    LEFT_FLAP_ON    = "left(); flap(1);         "
-    RIGHT_FLAP_ON   = "right(); flap(1);        "
+    LEFT_FLAP_ON    = LEFT + FLAP_ON 
+    RIGHT_FLAP_ON   = RIGHT + FLAP_ON
 
     # Define action space based on available inputs
-    actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
+    # actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP] # more complex
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP, FLAP_ON, FLAP_OFF, LEFT_FLAP_ON, RIGHT_FLAP_ON] # most
+    actions = [FLAP_OFF, FLAP_ON, LEFT_OFF, LEFT_ON, RIGHT_OFF, RIGHT_ON]
     action_space = gym.spaces.Discrete(len(actions))  
 
     # pixels should be be normalized to [-1.0, 1.0] in a wrapper or e.g. CnnPolicy of https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
@@ -105,7 +113,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                     f"print('Listening on port {self.SOCKET_PORT}...'); "
                 )
         open(mini_server, 'w').write(script)
-        # launch MAME running Joust and above Lua server script
+        # launch MAME running Joust and hosting the Lua server script above
         exec = self.MAME_EXE or os.path.join(os.path.dirname(__file__), 'mame', 'mame')
         self.mame = subprocess.Popen(
             [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-sound', 'none', '-pause_brightness', '1.0', '-background_input', '-autoboot_script', mini_server], 
@@ -153,9 +161,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         sleep(2) # let boot sequence playout while still unthrolled
         self._run_lua( f"vid.throttled = {str(self.THROTTLED).lower()}; " )# Set throttle back to default
         self._run_lua(self.COIN_START) # Insert coin and start game
-        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do wait() end; emu.step(); ")# Wait for play to start
+        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do next() end; ")# Wait for play to start
         pixel_history, _, _, _, info = self.step() # step with no action to get initial state and set initial last_values
-        self.pixel_history[1:,:,:] = pixel_history[0,:,:] # copy this 1st frame to 'historical' frames to indicate no motion)
+        self.pixel_history[:,:,:] = pixel_history[0,:,:] # copy this 1st frame to 'historical' frames to indicate no motion)
         return self.pixel_history, info
 
     ####################################################################################################################
@@ -164,20 +172,15 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         # overrides the mandatory gym.Env step() method for Joust
         input_lua = self.actions[action_idx]    if action_idx is not None else ''   
         lua = ( "        " + input_lua + 
-            "swait();" * self.FRAMES_PER_STEP +
+            ("snext();" * self.FRAMES_PER_STEP ) +
             f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
             "return pack('>B I4', lives, score)..s:pixels(); ") # bitpak and return lives, score and screen pixels
         response = self._run_lua(lua, expected_len=5+self.HEIGHT*self.WIDTH*4) # 5 bytes for lives, score; height*widght*channels for pixels
         lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
         pixels = np.frombuffer(response[5:], dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1] 
-        # downsample to half the resolution in a sophisticated way 
-        # pixels = pixels[::self.DOWNSCALE, ::self.DOWNSCALE, :]
-        pixels =skimage.measure.block_reduce(pixels, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # shape is now (h',w',1):
-        # Move chanels to first dimension, per convention
-        pixels = np.moveaxis(pixels, -1, 0) #shape is now (1,h,w)
-        # Convert to grayscale 
-        # pixels = np.mean(pixels, axis=0).astype(np.uint8) 
+        pixels =skimage.measure.block_reduce(pixels, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # shape now (h',w',1): downlsampled & grayscaled via mean
+        pixels = np.moveaxis(pixels, -1, 0) #shape is now (1,h,w) channel first, as per ML convention
         # Calculate reward, done status, info then return with observation 
         score_diff = score - self.last_score
         lives_diff = lives - self.last_lives
@@ -221,7 +224,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                 self.screen.blit(self.last_text_surface, (10, 10))
                 pygame.display.flip()
                 self.clock.tick(60/self.FRAMES_PER_STEP)
-            except pygame.error:
+            except (pygame.error, ZeroDivisionError) :
                 pass
 
 
@@ -289,13 +292,15 @@ if __name__ == "__main__":
         # 10-steps to reverse direction in place. 5 steps after the 1st animates
         # action = [2,2,0,0,3,3,0,0,2,2,0,0,3,3][_ % 14]
         # action = [2,2,0,0,3,3,0,0][_ % 8]
+        # action = [2,3,2,3][_ % 4]
         # action = [2,3,2,3,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]
         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
         # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
-        # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
+        # action =   [0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
+        # action = [3,2,5,4][_ % 4]
         observation, reward, done, truncated, info = env.step(action)
+        sleep(.5)
         
         if done or truncated:
             observation, info = env.reset()
         
-# %%
