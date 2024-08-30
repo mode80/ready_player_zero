@@ -25,6 +25,3 @@ for _ in range(10_000):
     if done or truncated:
         obs, _ = env.reset()
 
-
-
-# %%

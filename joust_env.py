@@ -12,9 +12,9 @@ import skimage.measure
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
-    FRAMES_PER_STEP = 5 # Joust inputs can take _ frames to affect the display output, so we shouldn't sample faster than this
+    FRAMES_PER_STEP = 1 # Joust inputs can take _ frames to affect the display output, so we shouldn't sample faster than this
     DOWNSCALE = 2 # Downscale the image by this factor (> 1 to speed up training)
-    DEBUG_OUTPUT = 1 # Output debugging verbosity [0,1,2]
+    DEBUG_OUTPUT = 2 # Output debugging verbosity [0,1,2]
 
     THROTTLED = False 
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
@@ -26,12 +26,11 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     P1_SCORE_ADDR = 0xA04C
  
     init_inputs_lua = ( # wait, waitup and, swait each work better in different contexts when contructing inputs
-        "next   = function() emu.wait_next_frame();end; " # advances one frame and pause
-        "stop   = function() emu.step() end; " # gets us to the next emulated frame
-        "nextup = function() emu.wait_next_update() end; " # gets us to the next video frame (even when paused, affected by skips etc)
-        "snext  = function() emu.step(); emu.wait_next_frame() end; " # step and next
-        "nexts  = function() emu.wait_next_frame(); emu.step() end; " # next and step
-        "snextup= function() emu.step(); emu.wait_next_update() end; "
+        "wait   = function() emu.wait_next_frame(); end; " # lets other lua process this frame, but doesn't itself advance the frame when paused
+        "stop   = function() emu.step(); end; " # pauses and squelches processing of other lua, (except wait_next_*?) including input commands and additional calls to emu.step()
+        "start  = function() emu.unpause(); end; " 
+        "waitup = function() emu.wait_next_update() end; " # gets us to the next video frame (even when paused; is affected by skips, etc)
+        "step1  = function() emu.step(); emu.wait_next_frame(); emu.wait_next_frame(); end; "  # this magic incantation advances the frame by 1 and pauses without squelching inputs
         """ 
         iop    = manager.machine.ioport.ports; 
         inp1   = iop[':INP1'].fields; 
@@ -44,11 +43,11 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         right  = function(v)  inp1['P1 Left']:set_value(v); end; 
         """)
 
-    COIN_TAP    = "coin(1); next(); next(); coin(0); " 
-    START_TAP   = "start(1); next(); next(); start(0); "
+    COIN_TAP    = "coin(1); wait(); wait(); coin(0); " 
+    START_TAP   = "start(1); wait(); wait(); start(0); "
     COIN_START  = COIN_TAP + START_TAP
 
-    FLAP            = "flap(1); snext();flap(0);" 
+    FLAP            = "flap(1); step1(); flap(0);" 
     FLAP_ON         = "flap(1);                 " 
     FLAP_OFF        = "flap(0);                 " 
     # flap animation is 69 steps() after flap(1) when there is no flap(0) release 
@@ -73,10 +72,10 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     RIGHT_FLAP_ON   = RIGHT + FLAP_ON
 
     # Define action space based on available inputs
-    # actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
+    actions = [CENTER, FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP] # more complex
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP, FLAP_ON, FLAP_OFF, LEFT_FLAP_ON, RIGHT_FLAP_ON] # most
-    actions = [FLAP_OFF, FLAP_ON, LEFT_OFF, LEFT_ON, RIGHT_OFF, RIGHT_ON]
+    # actions = [FLAP_OFF, FLAP_ON, LEFT_OFF, LEFT_ON, RIGHT_OFF, RIGHT_ON]
     action_space = gym.spaces.Discrete(len(actions))  
 
     # pixels should be be normalized to [-1.0, 1.0] in a wrapper or e.g. CnnPolicy of https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html
@@ -101,7 +100,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                             "if #chunk < 4096 then break; end; " # if less than full read, assume no more data
                         "end; " 
                         "if #cmd>0 then " # if anything was inbound
-                            + ("print(cmd); " if self.DEBUG_OUTPUT > 0 else "") +
+                            + ("print(manager.machine.screens:at(1):frame_number()..': '..cmd); " if self.DEBUG_OUTPUT > 0 else "") +
                             "local ok,res=pcall(load(cmd)); " # run it and capture results
                             # "print(ok, res); "
                             "if res==nil then res=''; end; " # if no results, set to empty string
@@ -161,7 +160,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         sleep(2) # let boot sequence playout while still unthrolled
         self._run_lua( f"vid.throttled = {str(self.THROTTLED).lower()}; " )# Set throttle back to default
         self._run_lua(self.COIN_START) # Insert coin and start game
-        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do next() end; ")# Wait for play to start
+        self._run_lua( f"for i=1,{self.READY_UP_FRAMES} do wait() end; ")# Wait for play to start
         pixel_history, _, _, _, info = self.step() # step with no action to get initial state and set initial last_values
         self.pixel_history[:,:,:] = pixel_history[0,:,:] # copy this 1st frame to 'historical' frames to indicate no motion)
         return self.pixel_history, info
@@ -171,10 +170,11 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     def step(self, action_idx=None):
         # overrides the mandatory gym.Env step() method for Joust
         input_lua = self.actions[action_idx]    if action_idx is not None else ''   
-        lua = ( "        " + input_lua + 
-            ("snext();" * self.FRAMES_PER_STEP ) +
-            f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
-            "return pack('>B I4', lives, score)..s:pixels(); ") # bitpak and return lives, score and screen pixels
+        lua = ( "        " + input_lua  + "print('    '..s:frame_number() ); "
+            + ("step1();" * (self.FRAMES_PER_STEP) ) +
+            f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); print('    '..s:frame_number() ); " # extract lives, score from memory
+            "return pack('>B I4', lives, score)..s:pixels(); "
+        ) # bitpak and return lives, score and screen pixels
         response = self._run_lua(lua, expected_len=5+self.HEIGHT*self.WIDTH*4) # 5 bytes for lives, score; height*widght*channels for pixels
         lives, score = struct.unpack('>B I', response[:5]) # unpack lives, score from first 1, then next 4 bytes respectively
         # unflatten bytes into row,col,channel format; # keep all rows and cols, but transform 'ABGR' to RGB, 
@@ -295,11 +295,11 @@ if __name__ == "__main__":
         # action = [2,3,2,3][_ % 4]
         # action = [2,3,2,3,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]
         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
-        # action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
+        action =   [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         # action =   [0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
         # action = [3,2,5,4][_ % 4]
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.5)
+        # sleep(.5)
         
         if done or truncated:
             observation, info = env.reset()
