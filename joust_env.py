@@ -30,7 +30,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         "wait   = function() emu.wait_next_frame(); end; " # lets other lua process this frame, but doesn't itself advance the frame when paused
         "stop   = function() emu.step(); end; " # pauses and squelches processing of other lua, (except wait_next_*?) including input commands and additional calls to emu.step()
         "waitup = function() emu.wait_next_update() end; " # gets us to the next video frame (even when paused; is affected by skips, etc)
-        "next   = function() emu.step(); emu.wait_next_frame(); emu.wait_next_frame(); end; "  # this magic incantation advances the frame by 1 and pauses without squelching inputs
+        "next   = function(n) for i = 1,n do emu.step(); emu.wait_next_frame(); emu.wait_next_frame(); end; end; "  # this magic incantation advances the n frames while paused without squelching inputs
         """ 
         iop    = manager.machine.ioport.ports; 
         inp1   = iop[':INP1'].fields; 
@@ -43,14 +43,14 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         right  = function(v)  inp1['P1 Right']:set_value(v); end; 
         """)
 
-    COIN_TAP        = "coin(1); wait(); wait(); coin(0);    "
+    COIN_TAP        = "coin(1);  wait(); wait(); coin(0);   "
     START_TAP       = "start(1); wait(); wait(); start(0);  "
     COIN_START      = COIN_TAP + START_TAP
 
-    OFF             = "left(0); right(0); flap(0); "
-    FLAP            = "flap(1);  next(); flap(0);  next(); flap(0);  "
-    LEFT            = "left(1);  next(); left(0);  for i = 1,7 do next(); end; "
-    RIGHT           = "right(1); next(); right(1); next(); right(0); "
+    OFF             = "left(0);  right(0); flap(0);         "
+    FLAP            = "flap(1);  next(1); flap(0);          "
+    LEFT            = "left(1);  next(1); left(0);  next(14);"
+    RIGHT           = "right(1); next(1); right(0); next(14);"
     # flight time per flap is 69 steps() after flap(1) when there is no flap(0) release 
     # otherwise 37 frames after flap release. animation starts on 3rd step after flap(1)   
 
@@ -68,7 +68,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     RIGHT_FLAP_ON   = RIGHT + FLAP_ON
 
     # Define action space based on available inputs
-    actions = [OFF, FLAP_ON, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
+    actions = ['', FLAP_ON, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP] # more complex
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP, FLAP_ON, FLAP_OFF, LEFT_FLAP_ON, RIGHT_FLAP_ON] # most
     # actions = [FLAP_OFF, FLAP_ON, LEFT_OFF, LEFT_ON, RIGHT_OFF, RIGHT_ON]
@@ -167,8 +167,8 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     def step(self, action_idx=None):
         # overrides the mandatory gym.Env step() method for Joust
         input_lua = self.actions[action_idx]    if action_idx is not None else ''   
-        lua = ( "        " + input_lua  
-            + ("next();" * (self.FRAMES_BETWEEN_STEP) ) +
+        lua = ( "        " + input_lua  +
+            f"next({self.FRAMES_BETWEEN_STEP});"
             f"local lives, score = get8({self.P1_LIVES_ADDR}), get32({self.P1_SCORE_ADDR}); " # extract lives, score from memory
             "return pack('>B I4', lives, score)..s:pixels(); "
         ) # bitpak and return lives, score and screen pixels
@@ -290,15 +290,15 @@ if __name__ == "__main__":
         # action = [2,2,0,0,3,3,0,0,2,2,0,0,3,3][_ % 14]
         # action = [2,2,0,0,3,3,0,0][_ % 8]
         # action =   [2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0][_ % 32]
-        # action = [2,3][_ % 2]
+        action = [2,3][_ % 2]
         # action = [2,0,0,0,3,0,0,0][_ % 8]
         # action = [2,3,2,3,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]
         # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
-        action =   [2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
+        # action =   [2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
         # action =   [0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
         # action = [3,2,5,4][_ % 4]
         observation, reward, done, truncated, info = env.step(action)
-        sleep(.5)
+        sleep(1)
         
         if done or truncated:
             observation, info = env.reset()
