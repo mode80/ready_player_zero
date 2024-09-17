@@ -1,7 +1,7 @@
 #%%#####################################################################################################################
 from random import randint
 from time import sleep
-from tkinter import RIGHT
+from tkinter import RIGHT, Widget
 import gymnasium as gym
 import numpy as np
 import os, subprocess, struct, socket
@@ -13,9 +13,10 @@ import skimage.measure
 class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     SOCKET_PORT = 1942
-    FRAMES_BETWEEN_STEP = 1 # Joust inputs can take _ frames to affect the display output, so we shouldn't sample faster than this
-    DOWNSCALE = 2 # Downscale the image by this factor (> 1 to speed up training)
-    DEBUG_OUTPUT = 1 # Output debugging verbosity [0,1,2]
+    FRAMES_BETWEEN_STEP = 1 # Joust inputs can take [4?] frames to affect the display output
+                             # furthermore an in place repeated left-right action separated by less than 15 frames causes a kind of "momentum drift"
+                             # humans can click a mouse 10x/sec but 4 is probably a reasonable limit for the bot for now ?
+    DOWNSCALE = 1 # Downscale the image by this factor (> 1 to speed up training)
 
     THROTTLED = False 
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
@@ -30,7 +31,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         "wait   = function() emu.wait_next_frame(); end; " # lets other lua process this frame, but doesn't itself advance the frame when paused
         "stop   = function() emu.step(); end; " # pauses and squelches processing of other lua, (except wait_next_*?) including input commands and additional calls to emu.step()
         "waitup = function() emu.wait_next_update() end; " # gets us to the next video frame (even when paused; is affected by skips, etc)
-        "next   = function(n) for i = 1,n do emu.step(); emu.wait_next_frame(); emu.wait_next_frame(); end; end; "  # this magic incantation advances the n frames while paused without squelching inputs
+        "next   = function(n) for i = 1,n do emu.step(); emu.wait_next_frame(); end; end; "  # this magic incantation advances the n frames while paused without squelching inputs
         """ 
         iop    = manager.machine.ioport.ports; 
         inp1   = iop[':INP1'].fields; 
@@ -49,10 +50,10 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     OFF             = "left(0);  right(0); flap(0);         "
     FLAP            = "flap(1);  next(1); flap(0);          "
-    LEFT            = "left(1);  next(1); left(0);  next(14);"
-    RIGHT           = "right(1); next(1); right(0); next(14);"
+    LEFT            = "left(1);  next(1); left(0);          " 
+    RIGHT           = "right(1); next(1); right(0);         " 
     # flight time per flap is 69 steps() after flap(1) when there is no flap(0) release 
-    # otherwise 37 frames after flap release. animation starts on 3rd step after flap(1)   
+    # otherwise 37 frames after flap release. animation starts on 3rd step after flap(1)    (still?)
 
     FLAP_ON         = "flap(1);                             " 
     FLAP_OFF        = "flap(0);                             " 
@@ -61,15 +62,15 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
     RIGHT_ON        = "right(1);                            "
     RIGHT_OFF       = "right(0);                            "
 
-    LEFT_FLAP   = LEFT + FLAP
-    RIGHT_FLAP  = RIGHT + FLAP
+    LEFT_FLAP   = "left(1); flap(1); next(1); left(0); flap(0)" 
+    RIGHT_FLAP  = "right(1); flap(1); next(1); right(0); flap(0)" 
 
     LEFT_FLAP_ON    = LEFT + FLAP_ON 
     RIGHT_FLAP_ON   = RIGHT + FLAP_ON
 
     # Define action space based on available inputs
-    actions = ['', FLAP_ON, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
-    # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP] # more complex
+    # actions = ['', FLAP, LEFT, RIGHT] # simplest - no control over flap release timing or simultaneous flap-left,right
+    actions = ['', FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP] # more complex
     # actions = [CENTER, FLAP, LEFT, RIGHT, LEFT_FLAP, RIGHT_FLAP, CENTER_FLAP, FLAP_ON, FLAP_OFF, LEFT_FLAP_ON, RIGHT_FLAP_ON] # most
     # actions = [FLAP_OFF, FLAP_ON, LEFT_OFF, LEFT_ON, RIGHT_OFF, RIGHT_ON]
     action_space = gym.spaces.Discrete(len(actions))  
@@ -82,8 +83,9 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
     ####################################################################################################################
 
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, debug_level=0):
         super().__init__()
+        self.DEBUG = debug_level # Output debugging verbosity [0,1,2]
         #prep minimalist Lua server (via transient lua file for Windows compatibility)
         mini_server = os.path.join(os.path.dirname(__file__), 'mini_server.lua')
         script = ("sock=emu.file('rwc'); " # setup server-side TCP socket
@@ -96,7 +98,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
                             "if #chunk < 4096 then break; end; " # if less than full read, assume no more data
                         "end; " 
                         "if #cmd>0 then " # if anything was inbound
-                            + ("print(manager.machine.screens:at(1):frame_number()..': '..cmd); " if self.DEBUG_OUTPUT > 0 else "") +
+                            + ("print(manager.machine.screens:at(1):frame_number()..': '..cmd); " if self.DEBUG > 0 else "") +
                             "local ok,res=pcall(load(cmd)); " # run it and capture results
                             # "print(ok, res); "
                             "if res==nil then res=''; end; " # if no results, set to empty string
@@ -111,6 +113,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         # launch MAME running Joust and hosting the Lua server script above
         exec = self.MAME_EXE or os.path.join(os.path.dirname(__file__), 'mame', 'mame')
         self.mame = subprocess.Popen(
+            # [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-sound', 'none', '-video', 'none', '-pause_brightness', '1.0', '-background_input', '-autoboot_script', mini_server], 
             [ exec, 'joust', '-console', '-window', '-skip_gameinfo', '-sound', 'none', '-pause_brightness', '1.0', '-background_input', '-autoboot_script', mini_server], 
             cwd=os.path.dirname(exec),
         )
@@ -132,7 +135,7 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
         self.pixel_history = np.zeros(self.observation_space.shape, dtype=np.uint8)
         self._run_lua(self.init_globals_lua)
         self._run_lua(self.init_inputs_lua) # init Lua for inputs
-        self._init_frame_debug() if self.DEBUG_OUTPUT > 1 else None
+        self._init_frame_debug() if self.DEBUG > 1 else None
         # for rendering 
         if self.render_mode == 'human':
             pygame.init()
@@ -279,26 +282,18 @@ class MinJoustEnv(gym.Env): # Minimalist Joust Environment
 
 # Example usage
 if __name__ == "__main__":
-    env = MinJoustEnv()
+    env = MinJoustEnv(debug_level=1)
     env.render_mode = 'human'  # Set the render mode to 'human' for visualization, or leave None
     env.reset()
 
     for _ in range(10_000): 
-        action = env.action_space.sample()  # Random action
-        # action = [0,0,2,2,3,3,1,2,3,4,5,6][randint(0,11)]
-        # 10-steps to reverse direction in place. 5 steps after the 1st animates
-        # action = [2,2,0,0,3,3,0,0,2,2,0,0,3,3][_ % 14]
+        # action = env.action_space.sample()  # Random action
         # action = [2,2,0,0,3,3,0,0][_ % 8]
-        # action =   [2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,0][_ % 32]
-        action = [2,3][_ % 2]
-        # action = [2,0,0,0,3,0,0,0][_ % 8]
-        # action = [2,3,2,3,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 20]
-        # action = [2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,3,3,3,3,3,3,3,3,3,3,0,0,0,0,0,0,2,2,2,2,2,2][_ % 64] 
-        # action =   [2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,2,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 50] 
-        # action =   [0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0][_ % 24] 
         # action = [3,2,5,4][_ % 4]
+        action = [1,1][_ % 2] # DOESNT WORK :((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
+        action = [0,1][_ % 2] # DOES WORK (??)
         observation, reward, done, truncated, info = env.step(action)
-        sleep(1)
+        # sleep(1)
         
         if done or truncated:
             observation, info = env.reset()

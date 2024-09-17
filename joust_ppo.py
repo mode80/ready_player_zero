@@ -10,7 +10,7 @@ env.render_mode = "human"
 # check_env(env)
 
 model = PPO("CnnPolicy", env, verbose=1)
-model.learn(total_timesteps=400_000)
+model.learn(total_timesteps=200_000)
 
 # save the tained model
 model.save("ppo_joust_")
