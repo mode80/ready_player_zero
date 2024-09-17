@@ -1,12 +1,10 @@
 #%%#####################################################################################################################
 from random import randint
 from time import sleep
-from tkinter import RIGHT, Widget
 import gymnasium as gym
 import numpy as np
 import os, subprocess, struct, socket
 import pygame
-import skimage.measure
 
 #%%#####################################################################################################################
 
