@@ -10,3 +10,4 @@ venv/
 *.tmp
 mini_server.lua
 *.zip
+libretro.py/
