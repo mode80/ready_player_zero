@@ -1,5 +1,4 @@
 ignore/
-mame/
 scripts/
 __pycache__/
 venv/
@@ -8,6 +7,4 @@ venv/
 *.py[cod]
 *.log
 *.tmp
-mini_server.lua
 *.zip
-libretro.py/

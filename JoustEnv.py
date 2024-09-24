@@ -1,9 +1,10 @@
+import select
 import gymnasium as gym
 import numpy as np
 import pygame
 import libretro
 from libretro import SessionBuilder, DefaultPathDriver, SubsystemContent, ContentDriver, JoypadState
-from libretro.h import RETRO_MEMORY_SYSTEM_RAM  
+from libretro.h import * 
 from libretro.drivers import ArrayAudioDriver, GeneratorInputDriver, ArrayVideoDriver, DictOptionDriver, UnformattedLogDriver
 import tempfile, os 
 import logging 
@@ -14,14 +15,15 @@ class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
     DOWNSCALE = 1 # Downscale the image by this factor (> 1 to speed up training)
-    FRAMES_PER_STEP = 5     # 12 press-or-relase actions (6 complete button presses) per second is reasonable for human reflexes 
+    FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
                             # but best way to handle this is probably to feed it a history of [?] previous inputs in the observation
+                            # and let it figure out what sequences do what
 
     WIDTH, HEIGHT = 292, 240#146#240 # pixel dimensions of the screen for this rom
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
+    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
     # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2000_libretro.dylib'
-    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2003_plus_libretro.dylib'
+    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2003_plus_libretro.dylib'
     ROM_PATH= '/Users/user/mame/roms/joust.zip'
     ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
     SYSTEM_PATH= '/Users/user/Documents/RetroArch/system'
@@ -45,6 +47,10 @@ class JoustEnv(gym.Env):
     def __init__(self, render_mode=None):
         super(JoustEnv, self).__init__()
 
+        # Initialize Pygame
+        pygame.init()
+        self.clock = pygame.time.Clock()
+
         # Define action space: Example for Joust 
         # Adjust the number of actions based on actual game controls
         # self.actions = [self.NOOP, self.FLAP]#, self.FLAP_LEFT, self.FLAP_RIGHT]
@@ -54,7 +60,7 @@ class JoustEnv(gym.Env):
         self.observation_space = gym.spaces.Box(
             low=0,
             high=255,
-            shape=(3, self.HEIGHT, self.WIDTH), 
+            shape=(3, self.HEIGHT//self.DOWNSCALE, self.WIDTH//self.DOWNSCALE), 
             dtype=np.uint8
         )
 
@@ -107,6 +113,10 @@ class JoustEnv(gym.Env):
 
         # Run frame(s) of the emulator
         self._set_action(action)
+
+        # Override agent actions with user input when in render_mode=human 
+        if self.render_mode == "human": self._process_pygame_events()
+
         for _ in range(self.FRAMES_PER_STEP): self.session.run()
 
         # Capture the current frame
@@ -159,6 +169,7 @@ class JoustEnv(gym.Env):
                 pygame.display.set_caption('MinJoustEnv Visualization')
                 self.clock = pygame.time.Clock()
                 self.font = pygame.font.Font(None, 24)
+                self.tiny_font = pygame.font.Font(None, 12)
                 self.surface = pygame.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
             try:
                 for event in pygame.event.get([pygame.QUIT]): pygame.quit(); return
@@ -166,10 +177,12 @@ class JoustEnv(gym.Env):
                 transformed_surface = pygame.transform.flip(pygame.transform.rotate(self.surface, -90), True, False)
                 scaled_surface = pygame.transform.scale(transformed_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
                 self.screen.blit(scaled_surface, (0, 0))
-                if not hasattr(self, 'last_text_surface') or (self.last_lives, self.last_score) != self.last_text_surface_value:
-                    self.last_text_surface = self.font.render(f"Lives: {self.last_lives} Score: {self.last_score}", True, (255, 255, 255))
-                    self.last_text_surface_value = (self.last_lives, self.last_score)
-                self.screen.blit(self.last_text_surface, (10, 10))
+                # if not hasattr(self, 'last_text_surface') or (self.last_lives, self.last_score) != self.last_text_surface_value:
+                self.stats_surface = self.font.render(f"Lives: {self.last_lives} Score: {self.last_score}", True, (255, 255, 255))
+                self.input_surface = self.tiny_font.render(f"{self.p1_input}", True, (255, 255, 255))
+                # self.last_text_surface_value = (self.last_lives, self.last_score)
+                self.screen.blit(self.stats_surface, (10, 10))
+                self.screen.blit(self.input_surface, (10, self.WIDTH*SCALE - 20))
                 pygame.display.flip()
                 self.clock.tick(60/self.FRAMES_PER_STEP)
             except (pygame.error, ZeroDivisionError) :
@@ -183,12 +196,31 @@ class JoustEnv(gym.Env):
         
     def _set_action(self, action):
         """ Convert and send the discrete action to the emulator.  """
-        self.p1_input =self.actions[action]
+        self.p1_input = self.actions[action]
+
+    def _process_pygame_events(self):
+        """ Process Pygame events and update self.p1_input based on user input. """
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type==pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+                self.close()
+            elif event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
+                is_pressed = event.type == pygame.KEYDOWN
+                if event.key == pygame.K_LEFT:
+                    self.p1_input = self.LEFT if is_pressed else self.NOOP
+                elif event.key == pygame.K_RIGHT:
+                    self.p1_input = self.RIGHT if is_pressed else self.NOOP
+                elif event.key == pygame.K_LCTRL or event.key == pygame.K_SPACE:
+                    self.p1_input = self.FLAP if is_pressed else self.NOOP
+                elif event.key == pygame.K_5:
+                    self.p1_input = self.COIN if is_pressed else self.NOOP
+                elif event.key == pygame.K_1:
+                    self.p1_input = self.START if is_pressed else self.NOOP
 
     def _get_frame(self):
         """ Capture the current video frame from the emulator.  """
+        # framebuf = self.session.video._current._frame # this is more direct framebuffer access but unconverted to RGB
         framebuf = self.session.video.screenshot().data
-        # framebuf = self.session.video._current._frame
+        # framebuf = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB...
         pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1] 
         pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
@@ -208,7 +240,7 @@ class JoustEnv(gym.Env):
         memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         if memory is None:
             return 0
-        lives = int.from_bytes(memory[self.P1_LIVES_ADDR], byteorder='little') # might need converting from hex encoded decimal 
+        lives = memory[self.P1_LIVES_ADDR] # might need converting from hex encoded decimal 
         return lives
 
     def _check_done(self):
@@ -232,24 +264,29 @@ if __name__ == "__main__":
     start_time = time.time()
     i = 0
 
-    for episode in range(50_000_000):
-        observation = env.reset()
-        done, truncated, total_reward = False, False, 0
-        while not (done or truncated):
-            i += 1
-            if i % (600) == 0: print(f"FPS: {i*env.FRAMES_PER_STEP // (time.time() - start_time)}")
-            # action = env.action_space.sample()  # Replace with your agent's action
-            # action = 3 if i%20==0 else 0 #[0,0,0,0,0,0,0,0,0,3][i%10]
-            # action = 2 if i%40==0 else action#[0,0,0,0,0,0,0,0,0,3][i%10]
-            action = [1,0,1,0][i%4]
-            observation, reward, done, truncated, info = env.step(action)
-            total_reward += reward
-            # env.render()
-        
-        current_time = time.time()
-        elapsed_time = current_time - start_time
-        fps = i / elapsed_time
-        print(f"Episode {episode + 1}: Total Reward: {total_reward}, FPS: {fps:.2f}")
+    try:
 
+        for episode in range(50_000_000):
+            observation = env.reset()
+            done, truncated, total_reward = False, False, 0
+            while not (done or truncated):
+                i += 1
+                if i % (600) == 0: print(f"FPS: {i*env.FRAMES_PER_STEP // (time.time() - start_time)}")
+                # action = env.action_space.sample()  # Replace with your agent's action
+                # action = 3 if i%20==0 else 0 #[0,0,0,0,0,0,0,0,0,3][i%10]
+                # action = 2 if i%40==0 else action#[0,0,0,0,0,0,0,0,0,3][i%10]
+                # action = [1,0,1,0][i%4]
+                action = 0 
+                observation, reward, done, truncated, info = env.step(action)
+                total_reward += reward
+                env.render()
+            
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+            fps = i / elapsed_time
+            print(f"Episode {episode + 1}: Total Reward: {total_reward}, FPS: {fps:.2f}")
 
-    env.close()
+        env.close()
+
+    except libretro.CoreShutDownException: # let's user close the window without an exception
+        pass
