@@ -40,7 +40,7 @@ class JoustEnv(gym.Env):
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
     FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
     COIN, START = JoypadState(select=True), JoypadState(start=True)
-    
+
 
     metadata = {'render.modes': ['human', 'rgb_array']}
 
@@ -169,7 +169,7 @@ class JoustEnv(gym.Env):
                 pygame.display.set_caption('MinJoustEnv Visualization')
                 self.clock = pygame.time.Clock()
                 self.font = pygame.font.Font(None, 24)
-                self.tiny_font = pygame.font.Font(None, 12)
+                self.tiny_font = pygame.font.Font(None, 17)
                 self.surface = pygame.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
             try:
                 for event in pygame.event.get([pygame.QUIT]): pygame.quit(); return
@@ -182,7 +182,7 @@ class JoustEnv(gym.Env):
                 self.input_surface = self.tiny_font.render(f"{self.p1_input}", True, (255, 255, 255))
                 # self.last_text_surface_value = (self.last_lives, self.last_score)
                 self.screen.blit(self.stats_surface, (10, 10))
-                self.screen.blit(self.input_surface, (10, self.WIDTH*SCALE - 20))
+                self.screen.blit(self.input_surface, (10, self.HEIGHT*SCALE - 17))
                 pygame.display.flip()
                 self.clock.tick(60/self.FRAMES_PER_STEP)
             except (pygame.error, ZeroDivisionError) :
@@ -201,20 +201,32 @@ class JoustEnv(gym.Env):
     def _process_pygame_events(self):
         """ Process Pygame events and update self.p1_input based on user input. """
         for event in pygame.event.get():
-            if event.type == pygame.QUIT or (event.type==pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 self.close()
-            elif event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
-                is_pressed = event.type == pygame.KEYDOWN
-                if event.key == pygame.K_LEFT:
-                    self.p1_input = self.LEFT if is_pressed else self.NOOP
-                elif event.key == pygame.K_RIGHT:
-                    self.p1_input = self.RIGHT if is_pressed else self.NOOP
-                elif event.key == pygame.K_LCTRL or event.key == pygame.K_SPACE:
-                    self.p1_input = self.FLAP if is_pressed else self.NOOP
-                elif event.key == pygame.K_5:
-                    self.p1_input = self.COIN if is_pressed else self.NOOP
-                elif event.key == pygame.K_1:
-                    self.p1_input = self.START if is_pressed else self.NOOP
+
+        keys = pygame.key.get_pressed()
+        
+        # Define key mappings
+        key_mappings = {
+            'b': [pygame.K_LCTRL, pygame.K_SPACE],
+            'y': [pygame.K_y],  
+            'select': [pygame.K_5],
+            'start': [pygame.K_1],
+            'up': [pygame.K_UP],
+            'down': [pygame.K_DOWN],
+            'left': [pygame.K_LEFT],
+            'right': [pygame.K_RIGHT],
+            'a': [pygame.K_a],
+            'x': [pygame.K_x]
+        }
+
+        # Create a dictionary of button states
+        button_states = {button: any(keys[key] for key in key_list) for button, key_list in key_mappings.items()}
+
+        # Create a new JoypadState instance based on the button states
+        new_input = JoypadState(**button_states)
+        # Assign the new input state
+        self.p1_input = new_input if new_input != JoypadState() else self.NOOP
 
     def _get_frame(self):
         """ Capture the current video frame from the emulator.  """
