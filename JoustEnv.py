@@ -1,9 +1,10 @@
-import select
+""" A 'no-framework' RL environment for retro arcade game Joust """
+
 import gymnasium as gym
 import numpy as np
 import pygame
 import libretro
-from libretro import SessionBuilder, DefaultPathDriver, SubsystemContent, ContentDriver, JoypadState
+from libretro import SessionBuilder, ExplicitPathDriver, SubsystemContent, ContentDriver, JoypadState
 from libretro.h import * 
 from libretro.drivers import ArrayAudioDriver, GeneratorInputDriver, ArrayVideoDriver, DictOptionDriver, UnformattedLogDriver
 import tempfile, os 
@@ -21,6 +22,7 @@ class JoustEnv(gym.Env):
                             # and let it figure out what sequences do what
 
     WIDTH, HEIGHT = 292, 240#146#240 # pixel dimensions of the screen for this rom
+    # CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/joust-retro/stable-retro-docker/stable-retro/retro/cores/fbneo_libretro.dylib'
     CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
     # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2000_libretro.dylib'
     # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2003_plus_libretro.dylib'
@@ -34,8 +36,10 @@ class JoustEnv(gym.Env):
     BOOT_FRAMES = 700 
     READY_UP_FRAMES = 225
 
-    P1_LIVES_ADDR = 0xA052
-    P1_SCORE_ADDR = 0xA04C
+    P1_LIVES_ADDR = 0xE253#|U1      
+    SCORE_HI4_ADDR = 0xE24C #<D2    
+    SCORE_LOW4_ADDR = 0xE24E #<D2   
+    CREDITS_ADDR = 0xe2f3 #|U1
  
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
     FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
@@ -77,7 +81,6 @@ class JoustEnv(gym.Env):
             yield from repeat(0, self.READY_UP_FRAMES)
             # take input during play
             while True:
-                # i=i+1; print(i, self.p1_input)
                 yield self.p1_input
 
         self.last_score, self.last_lives = 0,0 
@@ -95,7 +98,7 @@ class JoustEnv(gym.Env):
             .with_input(GeneratorInputDriver(input_callback))
             .with_log(self.log_driver)
             .with_paths(
-                DefaultPathDriver(
+                ExplicitPathDriver(
                     corepath = self.CORE_PATH,
                     system = self.SYSTEM_PATH,
                     assets = self.ASSETS_PATH,
@@ -119,10 +122,8 @@ class JoustEnv(gym.Env):
 
         for _ in range(self.FRAMES_PER_STEP): self.session.run()
 
-        # Capture the current frame
-        pixels = self._get_frame()
-        
         # 3-frame history
+        pixels = self._get_frame() # current frame
         self.pixel_history = np.roll(self.pixel_history, 1, axis=0)  # cycle 'channel' from [old, older, oldest] to [oldest, old, older]
         self.pixel_history[0] = pixels # replace oldest with current observation
 
@@ -147,15 +148,6 @@ class JoustEnv(gym.Env):
         self.session.run()
         initial_frame = self._get_frame()
         return initial_frame
-
-    # def render(self, mode='human'):
-    #     """ Render the environment.  """
-    #     frame = self._get_frame()
-    #     frame = frame.squeeze(0)# transform frame from (1,h,w) to (h,w)
-    #     if self.render_mode == 'human':
-    #         if not hasattr(self, 'screen') : self.screen = pygame.display.set_mode( (frame.shape[0], frame.shape[1]))
-    #         pygame.surfarray.blit_array(self.screen, frame)
-    #         pygame.display.flip()
 
     def render(self, mode=''):
         mode = self.render_mode if mode == '' else mode
@@ -203,36 +195,28 @@ class JoustEnv(gym.Env):
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 self.close()
+            if (event.type == pygame.KEYDOWN and event.key == pygame.K_F1):
+                self._print_memory_block()
 
         keys = pygame.key.get_pressed()
-        
-        # Define key mappings
         key_mappings = {
             'b': [pygame.K_LCTRL, pygame.K_SPACE],
-            'y': [pygame.K_y],  
-            'select': [pygame.K_5],
-            'start': [pygame.K_1],
-            'up': [pygame.K_UP],
-            'down': [pygame.K_DOWN],
-            'left': [pygame.K_LEFT],
-            'right': [pygame.K_RIGHT],
-            'a': [pygame.K_a],
-            'x': [pygame.K_x]
+            'select': [pygame.K_5], 'start': [pygame.K_1],
+            'up': [pygame.K_UP], 'down': [pygame.K_DOWN],
+            'left': [pygame.K_LEFT], 'right': [pygame.K_RIGHT],
+            'a': [pygame.K_a], 'x': [pygame.K_x], 'y': [pygame.K_y]  
         }
 
-        # Create a dictionary of button states
         button_states = {button: any(keys[key] for key in key_list) for button, key_list in key_mappings.items()}
-
-        # Create a new JoypadState instance based on the button states
         new_input = JoypadState(**button_states)
-        # Assign the new input state
         self.p1_input = new_input if new_input != JoypadState() else self.NOOP
+
 
     def _get_frame(self):
         """ Capture the current video frame from the emulator.  """
         # framebuf = self.session.video._current._frame # this is more direct framebuffer access but unconverted to RGB
         framebuf = self.session.video.screenshot().data
-        # framebuf = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
+        # framebuf = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM) # TODO modify core to surface this?
         # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB...
         pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1] 
         pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
@@ -244,7 +228,8 @@ class JoustEnv(gym.Env):
         memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         if memory is None:
             return 0
-        score = int.from_bytes(memory[self.P1_SCORE_ADDR:self.P1_SCORE_ADDR+4], byteorder='little')# might need converting from hex encoded decimal 
+        score = int.from_bytes(memory[self.SCORE_LOW4_ADDR:self.SCORE_LOW4_ADDR], byteorder='little')
+        score = self._bcd_to_int(score)
         return score
 
     def _get_lives(self):
@@ -252,8 +237,17 @@ class JoustEnv(gym.Env):
         memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         if memory is None:
             return 0
-        lives = memory[self.P1_LIVES_ADDR] # might need converting from hex encoded decimal 
+        lives = memory[self.P1_LIVES_ADDR] 
         return lives
+
+    def _print_memory_block(self):
+        """ Print a block of memory for debugging purposes.  """
+        memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
+        if memory is None:
+            return
+        for i in range(0, len(memory), 16):
+            print(f"{i:04X}: {' '.join(f'{byte:02X}' for byte in memory[i:i+16])}")
+
 
     def _check_done(self):
         """ Determine if the game has ended.  """
@@ -265,6 +259,11 @@ class JoustEnv(gym.Env):
         # Example: Reward based solely on score
         return score
 
+    def _bcd_to_int(self,bcd_value):
+        # Convert BCD (Binary Coded Decimal) to a decimal int
+        # Old MAME roms often store numbers in memory as BCD
+        # BCD amounts to "the hex formated number, read as decimal (after the 0x part)"
+        return int(hex(bcd_value)[2:])
 
 import time
 
@@ -284,11 +283,9 @@ if __name__ == "__main__":
             while not (done or truncated):
                 i += 1
                 if i % (600) == 0: print(f"FPS: {i*env.FRAMES_PER_STEP // (time.time() - start_time)}")
-                # action = env.action_space.sample()  # Replace with your agent's action
-                # action = 3 if i%20==0 else 0 #[0,0,0,0,0,0,0,0,0,3][i%10]
-                # action = 2 if i%40==0 else action#[0,0,0,0,0,0,0,0,0,3][i%10]
+                action = env.action_space.sample()  # Replace with trained agent's action
                 # action = [1,0,1,0][i%4]
-                action = 0 
+                # action = 0 
                 observation, reward, done, truncated, info = env.step(action)
                 total_reward += reward
                 env.render()
