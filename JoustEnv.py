@@ -195,6 +195,7 @@ class JoustEnv(gym.Env):
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
                 self.close()
+                return
             if (event.type == pygame.KEYDOWN and event.key == pygame.K_F1):
                 self._print_memory_block()
 
@@ -228,7 +229,7 @@ class JoustEnv(gym.Env):
         memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         if memory is None:
             return 0
-        score = int.from_bytes(memory[self.SCORE_LOW4_ADDR:self.SCORE_LOW4_ADDR], byteorder='little')
+        score = int.from_bytes(memory[self.SCORE_LOW4_ADDR:self.SCORE_LOW4_ADDR+2], byteorder='little')
         score = self._bcd_to_int(score)
         return score
 
@@ -263,7 +264,10 @@ class JoustEnv(gym.Env):
         # Convert BCD (Binary Coded Decimal) to a decimal int
         # Old MAME roms often store numbers in memory as BCD
         # BCD amounts to "the hex formated number, read as decimal (after the 0x part)"
-        return int(hex(bcd_value)[2:])
+        try:
+            return int(hex(bcd_value)[2:])
+        except:
+            return 0 # don't want this to fail when scrambled memory is ready during boot sequence
 
 import time
 
