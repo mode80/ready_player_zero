@@ -11,6 +11,7 @@ import tempfile, os
 import logging 
 import skimage
 from itertools import repeat
+import time
 
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
@@ -22,24 +23,28 @@ class JoustEnv(gym.Env):
                             # and let it figure out what sequences do what
 
     WIDTH, HEIGHT = 292, 240#146#240 # pixel dimensions of the screen for this rom
-    # CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/joust-retro/stable-retro-docker/stable-retro/retro/cores/fbneo_libretro.dylib'
     CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2000_libretro.dylib'
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/mame2003_plus_libretro.dylib'
-    ROM_PATH= '/Users/user/mame/roms/joust.zip'
     ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
     SYSTEM_PATH= '/Users/user/Documents/RetroArch/system'
     ASSETS_PATH= '/Users/user/Documents/RetroArch/assets'
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     PLAYLIST_PATH= '/Users/user/Documents/RetroArch/playlists'
-     # MAX_SCORE_DIFF = 3000.0 # Maximum score difference for a single step. 
+
     BOOT_FRAMES = 700 
     READY_UP_FRAMES = 225
 
-    P1_LIVES_ADDR = 0xE253#|U1      
-    SCORE_HI4_ADDR = 0xE24C #<D2    
-    SCORE_LOW4_ADDR = 0xE24E #<D2   
-    CREDITS_ADDR = 0xe2f3 #|U1
+    P1_LIVES_ADDR = 0xE252#|U1      
+    SCORE_HI4_ADDR = 0xE24B #<D2    
+    SCORE_LOW4_ADDR = 0xE24D #<D2   
+
+    SCORE_LOWEST2_ADDR = 0xE24F #|U1
+    SCORE_LOW2_ADDR = 0xE24E #|U1
+    SCORE_HIGH2_ADDR = 0xE24D #|U1
+    SCORE_HIGHEST2_ADDR = 0xE24C #|U1
+
+    CREDITS_ADDR = 0xe2f2 #|U1
+
+    
  
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
     FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
@@ -109,6 +114,10 @@ class JoustEnv(gym.Env):
             .build()
         )
 
+        # hold a reference to core's memory 
+        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
+        self.ram_size = self.session.core.get_memory_size(RETRO_MEMORY_SYSTEM_RAM)
+
         self.session.__enter__()
 
     def step(self, action):
@@ -128,6 +137,7 @@ class JoustEnv(gym.Env):
         self.pixel_history[0] = pixels # replace oldest with current observation
 
         # Extract state information
+        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         score = self._get_score()
         lives = self._get_lives()
 
@@ -226,29 +236,30 @@ class JoustEnv(gym.Env):
 
     def _get_score(self):
         """ Retrieve the current score from the emulator's memory.  """
-        memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
-        if memory is None:
-            return 0
-        score = int.from_bytes(memory[self.SCORE_LOW4_ADDR:self.SCORE_LOW4_ADDR+2], byteorder='little')
-        score = self._bcd_to_int(score)
+        if self.mem is None: return 0
+        # score = int.from_bytes(self.ram[self.SCORE_LOW4_ADDR:self.SCORE_LOW4_ADDR+2], byteorder='little')
+        ______XX = self.mem[self.SCORE_LOWEST2_ADDR] 
+        ____XX__ = self.mem[self.SCORE_LOW2_ADDR] 
+        __XX____ = self.mem[self.SCORE_HIGH2_ADDR] 
+        XX______ = self.mem[self.SCORE_HIGHEST2_ADDR] 
+        score = self._bcd_to_int(XX______)*1000000 + self._bcd_to_int(__XX____)*10000 + self._bcd_to_int(____XX__)*100 + self._bcd_to_int(______XX)
+        self.last_score=score
         return score
 
     def _get_lives(self):
         """ Retrieve the current number of lives from the emulator's memory.  """
-        memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
-        if memory is None:
-            return 0
-        lives = memory[self.P1_LIVES_ADDR] 
+        # memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
+        if self.mem is None: return 0
+        lives = self.mem[self.P1_LIVES_ADDR] 
+        self.last_lives = lives
         return lives
 
     def _print_memory_block(self):
         """ Print a block of memory for debugging purposes.  """
-        memory = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
-        if memory is None:
-            return
-        for i in range(0, len(memory), 16):
-            print(f"{i:04X}: {' '.join(f'{byte:02X}' for byte in memory[i:i+16])}")
-
+        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
+        if self.mem is None: return
+        for i in range(0, len(self.mem), 16):
+            print(f"{i:04X}: {' '.join(f'{byte:02X}' for byte in self.mem[i:i+16])}")
 
     def _check_done(self):
         """ Determine if the game has ended.  """
@@ -269,7 +280,6 @@ class JoustEnv(gym.Env):
         except:
             return 0 # don't want this to fail when scrambled memory is ready during boot sequence
 
-import time
 
 # Example usage
 if __name__ == "__main__":

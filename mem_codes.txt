@@ -1,0 +1,43 @@
+0x00e24c,[8-bit] [BCD] Player 1 Score XX,000,000
+0x00e24d,[8-bit] [BCD] Player 1 Score 00XX0000
+0x00e24e,[8-bit] [BCD] Player 1 Score 0000XX00
+0x00e24f,[8-bit] [BCD] Player 1 Score 000000XX
+0x00e252,[8-bit] Lives
+0x00e25b,[8-bit] Player 2 Lives
+0x00e25e,[8-bit] Extra life per score setting - Lower e and Upper f of 0x00e25 in decimal. Default is 20
+0x00e273,[16 Bit BE] Player character pointer + 0x4214 = [Lower 4] Player Speed, [Upper 4] Player Direction
+0x00e277,[8-bit] Starting Number of Lives Setting, default = 05
+0x00e28e,[8-bit] Number of Enemies loaded into memory spawned from a certain memory grouping (particularly round 5 egg round)
+0x00e290,[Single Bit] bit 7 = Attract Mode toggle, 0 = Attract, 1 = Play
+0x00e29e,[8-bit] [BCD] Current Wave
+0x00e2a1,[8-bit] Number of Mounted Enemies
+0x00e2aa,[8-bit] Number of Enemies + Eggs
+0x00e2ab,[8-bit] Time tracking for pterodactyl
+0x00e3bc,Generally first loaded from Player Character Pointer:[Lower 4] Player Speed, [Upper 4] Player Direction
+0x00f3b1,[8-bit] Service Menu Difficulty, Default x06
+0x010207,[8-bit] e8 = fully loaded
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
