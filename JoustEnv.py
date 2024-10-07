@@ -6,7 +6,7 @@ import numpy as np
 import pygame as pg
 import libretro, skimage
 import os, logging, time
-from libretro import SessionBuilder, ExplicitPathDriver, JoypadState
+from libretro import SessionBuilder, ExplicitPathDriver, JoypadState, InputDeviceFlag
 from libretro.h import * 
 from libretro.drivers import GeneratorInputDriver, UnformattedLogDriver, ModernGlVideoDriver
 from itertools import repeat
@@ -14,6 +14,7 @@ from itertools import repeat
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
+    THROTTLE = False        # limit to 60 FTS (when in render_mode = 'human')?
     DOWNSCALE = 1           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
@@ -21,8 +22,10 @@ class JoustEnv(gym.Env):
                             # and let it figure out what sequences do what
 
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
-    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
-    ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
+    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
+    CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/forked/stable-retro/cores/arcade/fbneo_libretro.dylib'
+    # ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
+    ROM_PATH= '/Users/user/mame/roms/joust.zip'
     SYSTEM_PATH= '/tmp'#/Users/user/Documents/RetroArch/system'
     ASSETS_PATH= '/tmp'#/Users/user/Documents/RetroArch/assets'
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
@@ -76,13 +79,6 @@ class JoustEnv(gym.Env):
         self.p1_input = JoypadState()
 
         def input_callback(): 
-            # Bypass start sequence
-            yield from repeat(self.NOOP, self.BOOT_FRAMES)
-            # yield from repeat(self.COIN, 1) 
-            # yield from repeat(self.NOOP, 10) 
-            # yield from repeat(self.START, 8) 
-            yield from repeat(self.NOOP, self.READY_UP_FRAMES)
-            # take input during play
             while True:
                 yield self.p1_input
 
@@ -96,7 +92,10 @@ class JoustEnv(gym.Env):
         self.session = ( libretro
             .defaults(self.CORE_PATH)
             .with_content(self.ROM_PATH)
-            .with_input(GeneratorInputDriver(input_callback))
+            .with_input(GeneratorInputDriver(
+                input_callback,  
+                max_users=1, #if max_useres != 1, we end up with double players, double inputs ¯_(ツ)_/¯
+                device_capabilities=InputDeviceFlag.JOYPAD)) # not sure if this is needed
             .with_log(self.log_driver)
             .with_paths( ExplicitPathDriver(
                 corepath = self.CORE_PATH, system = self.SYSTEM_PATH, 
@@ -117,7 +116,7 @@ class JoustEnv(gym.Env):
         if self.render_mode == "human": 
             self._process_input()# Override agent actions with user input 
 
-        # step through the coming frames with input supplied by self.p1_input via callback
+        # step through the coming frames with input supplied by self.p1_input via input_callback
         for _ in range(self.FRAMES_PER_STEP): 
             self.session.run()
 
@@ -204,14 +203,17 @@ class JoustEnv(gym.Env):
                 transformed_surface = pg.transform.flip(pg.transform.rotate(self.surface, -90), True, False)
                 scaled_surface = pg.transform.scale(transformed_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
                 self.screen.blit(scaled_surface, (0, 0))
-                self.stats_surface = self.font.render(f"Lives: {self.last_lives} Score: {self.last_score}", True, (255, 255, 255))
+                self.stats_surface = self.font.render(
+                    f"Lives: {self.last_lives} Score: {self.last_score} Coin: {self.mem[self.CREDITS_ADDR]}",
+                    True, (255, 255, 255)
+                )
                 self.input_surface = self.tiny_font.render(f"{self.p1_input}", True, (255, 255, 255))
                 self.input_surface = self.tiny_font.render(f"{self.p1_input.mask:016b}", True, (255, 255, 255))
                 # self.last_text_surface_value = (self.last_lives, self.last_score)
                 self.screen.blit(self.stats_surface, (10, 10))
                 self.screen.blit(self.input_surface, (10, self.HEIGHT*SCALE - 17))
                 pg.display.flip()
-                self.clock.tick(60/self.FRAMES_PER_STEP) # throttle
+                if self.THROTTLE: self.clock.tick(60/self.FRAMES_PER_STEP) 
             except (pg.error, ZeroDivisionError) :
                 pass
 
@@ -239,14 +241,17 @@ class JoustEnv(gym.Env):
             if (event.type == pg.KEYDOWN and event.key == pg.K_F4):
                 self._save_game(self.SAVED_GAME_FILE)
 
+            if (event.type == pg.KEYDOWN and event.key == pg.K_F5):
+                self.mem[self.CREDITS_ADDR]=0x1
+
             elif event.type in [pg.KEYDOWN, pg.KEYUP] :
                 keys = pg.key.get_pressed()
                 key_mappings = {
-                    'b': [pg.K_LCTRL, pg.K_SPACE, pg.K_z],
+                    'b': [pg.K_LCTRL, pg.K_SPACE, pg.K_z, pg.K_UP, pg.K_w, pg.K_LSHIFT],
                     'select': [pg.K_5, pg.K_TAB], 
                     'start': [pg.K_1, pg.K_RETURN],
                     'up': [pg.K_UP], 'down': [pg.K_DOWN],
-                    'left': [pg.K_LEFT], 'right': [pg.K_RIGHT],
+                    'left': [pg.K_LEFT, pg.K_a], 'right': [pg.K_RIGHT, pg.K_d],
                     'a': [pg.K_a], 'x': [pg.K_x], 'y': [pg.K_y]
                 }
                 button_states = {button: any(keys[key] for key in key_list) for button, key_list in key_mappings.items()}
@@ -284,6 +289,7 @@ class JoustEnv(gym.Env):
 
     def _print_memory_block(self):
         """ Print a block of memory for debugging purposes.  """
+        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)# hold a reference to core's memory 
         if self.mem is None: return
         for i in range(0, len(self.mem), 16):
             print(f"{i:04X}: {' '.join(f'{byte:02X}' for byte in self.mem[i:i+16])}")
@@ -313,25 +319,23 @@ if __name__ == "__main__":
 
     env = JoustEnv(render_mode='human')
 
-    start_time = time.time()
-    i = 0
-
-    for episode in range(1_000_000):
+    for epi_count in range(1_000_000):
         observation = env.reset()
         done, truncated, total_reward = False, False, 0
-        while True: #not (done or truncated):
-            i += 1
-            if i % (600) == 0: print(f"FPS: {i*env.FRAMES_PER_STEP // (time.time() - start_time)}")
-            # action = env.action_space.sample()  # Replace with trained agent's action
+        epi_frames=0
+        epi_start = time.time()
+        while not (done or truncated):
+            epi_frames += 1
+            # if epi_frames % (600) == 0: print(f"FPS: {i*env.FRAMES_PER_STEP // (time.time() - epi_start)}")
+            action = env.action_space.sample()  # Replace with trained agent's action
             # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. need last_action as an input(?)
-            action = None 
+            # action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
             env.render()
         
-        current_time = time.time()
-        elapsed_time = current_time - start_time
-        fps = i / elapsed_time
-        print(f"Episode {episode + 1}: Total Reward: {total_reward}, FPS: {fps:.2f}")
+        epi_secs = time.time() - epi_start
+        fps = epi_frames / epi_secs
+        print(f"Episode {epi_count + 1}: Total Reward: {total_reward:.2f}, FPS: {fps:.0f}")
 
     env.close()
