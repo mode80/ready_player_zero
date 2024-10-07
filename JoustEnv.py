@@ -322,20 +322,20 @@ if __name__ == "__main__":
     for epi_count in range(1_000_000):
         observation = env.reset()
         done, truncated, total_reward = False, False, 0
-        epi_frames=0
+        epi_steps=0
         epi_start = time.time()
         while not (done or truncated):
-            epi_frames += 1
-            # if epi_frames % (600) == 0: print(f"FPS: {i*env.FRAMES_PER_STEP // (time.time() - epi_start)}")
+            epi_steps += 1
             action = env.action_space.sample()  # Replace with trained agent's action
             # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. need last_action as an input(?)
             # action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
-            env.render()
+            # env.render()
         
         epi_secs = time.time() - epi_start
-        fps = epi_frames / epi_secs
-        print(f"Episode {epi_count + 1}: Total Reward: {total_reward:.2f}, FPS: {fps:.0f}")
+        aps = epi_steps / epi_secs
+        fps = aps*env.FRAMES_PER_STEP 
+        print(f"Epi {epi_count + 1}: Rew: {total_reward:.2f}, FPS: {fps:.0f}, APS: {aps:.0f}")
 
     env.close()
