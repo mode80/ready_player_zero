@@ -14,7 +14,7 @@ from itertools import repeat
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
-    THROTTLE = False        # limit to 60 FTS (when in render_mode = 'human')?
+    THROTTLE = True         # limit to 60 FTS (when in render_mode = 'human')?
     DOWNSCALE = 1           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
@@ -261,13 +261,14 @@ class JoustEnv(gym.Env):
 
     def _get_frame(self):
         """ Capture the current video frame from the emulator.  """
-        # framebuf = self.session.video._current._frame # this is more direct framebuffer access but unconverted to RGB
-        framebuf = self.session.video.screenshot().data
-        # framebuf = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM) # TODO modify core to surface this?
-        # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB...
-        pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape((self.HEIGHT, self.WIDTH, 4))[:,:,2::-1] 
-        pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
-        # pixels2 = pixels1[:,:,0:1] # just take the red channel # 1.5x faster than mean
+        # framebuf = self.session.video.screenshot().data
+        framebuf = self.session.video._current._frame # this is more direct framebuffer access but square dimensions and unconverted to RGB
+        square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer is large enough to be as tall as it is wide with margins, and 4 channels
+        margin = (self.WIDTH-self.HEIGHT)//2 #eg.292-240/2
+        # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB, and crop off the top/bottom margins
+        pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[margin:-margin,:,2::-1] 
+        # pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
+        pixels2 = pixels1[:,:,1:2] # just take one color channel # 1.5x faster than mean
         pixels3 = np.moveaxis(pixels2, -1, 0) #make channel first as per ML convention;   shape is now (1,h,w) 
         return pixels3 
 
@@ -317,7 +318,7 @@ class JoustEnv(gym.Env):
 # Example usage
 if __name__ == "__main__":
 
-    env = JoustEnv(render_mode='human')
+    env = JoustEnv()#render_mode='human')
 
     for epi_count in range(1_000_000):
         observation = env.reset()
@@ -331,7 +332,7 @@ if __name__ == "__main__":
             # action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
-            # env.render()
+            if env.render_mode=='human': env.render()
         
         epi_secs = time.time() - epi_start
         aps = epi_steps / epi_secs
