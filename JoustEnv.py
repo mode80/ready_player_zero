@@ -1,6 +1,5 @@
 """ A 'no-framework' RL environment for retro arcade game Joust """
 
-from tkinter.filedialog import Open
 import gymnasium as gym
 import numpy as np
 import pygame as pg
@@ -14,8 +13,8 @@ from itertools import repeat
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
-    THROTTLE = False        # limit to 60 FTS (when in render_mode = 'human')?
-    DOWNSCALE = 1           # Downscale the image by this factor (> 1 to speed up training)
+    THROTTLE = True         # limit to 60 FTS (when in render_mode = 'human')?
+    DOWNSCALE = 2           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
                             # but best way to handle this is probably to feed it a history of [?] previous inputs in the observation
@@ -25,16 +24,18 @@ class JoustEnv(gym.Env):
 
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
     ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
-    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
-    # CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
-    START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
+    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
+    CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
+    START_STATE_FILE = './states/joust_start_1p_debug.state' # use './states/joust_start_1p_debug.state' for debug dylib
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
 
     P1_LIVES_ADDR = 0xE252#|U1      
     SCORE_MOST_SIG_ADDR = 0xE24C #|U1
     CREDITS_ADDR = 0xe2f2 #|U1
- 
+    FULLY_LOADED_ADDR = 0x10207 #|U1  e8 = fully loaded
+    GAME_OVER_ADDR = 0x00e290 #|U1  bit 7 :  0 = Attract, 1 = Playing
+
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
     FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
     COIN, START = JoypadState(select=True), JoypadState(start=True)
@@ -45,7 +46,7 @@ class JoustEnv(gym.Env):
     def __init__(self, render_mode=None):
         super(JoustEnv, self).__init__()
 
-        # Initialize Pygame
+        # Initialize pygame for rendering
         pg.init()
         self.pg_clock = pg.time.Clock()
 
@@ -55,11 +56,17 @@ class JoustEnv(gym.Env):
         self.actions = [self.NOOP, self.FLAP, self.LEFT, self.RIGHT, self.FLAP_LEFT, self.FLAP_RIGHT]
         self.action_space = gym.spaces.Discrete(len(self.actions))
 
-        self.observation_space = gym.spaces.Box(
-            low=0, high=255,
-            shape=(3, self.HEIGHT//self.DOWNSCALE, self.WIDTH//self.DOWNSCALE), 
-            dtype=np.uint8
+        image_space = gym.spaces.Box(
+            low=-1.0, high=1.0,
+            shape=(self.HEIGHT//self.DOWNSCALE, self.WIDTH//self.DOWNSCALE), 
+            dtype=np.float32
         )
+
+        self.observation_space = gym.spaces.Dict({
+            "image_data": image_space,
+            "last_action": self.action_space
+        })
+
 
         self.log_driver = UnformattedLogDriver()
         self.log_driver._logger.setLevel(logging.WARN)
@@ -73,7 +80,7 @@ class JoustEnv(gym.Env):
 
         # for rendering
         self.render_mode = render_mode
-        self.pixel_history = np.zeros(self.observation_space.shape, dtype=np.uint8)
+        self.pixel_history = np.zeros((image_space.shape[0], image_space.shape[1], 3), dtype=np.uint8)
 
         # Initialize libretro session with configured drivers
         self.session = ( libretro
@@ -94,41 +101,78 @@ class JoustEnv(gym.Env):
 
         self.session.__enter__()
 
+    def _get_observation(self):
+
+        self.pixels = self._get_frame() # (use self persistant vars to avoid repeated allocations during tight-loop processing )
+        square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer comes back tall as it is wide, with empty bottom margin, and 4 channels
+        margin = (self.WIDTH-self.HEIGHT) # margin is empty bottom
+
+        # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB, and crop the margin:
+        self.pixels0 = np.frombuffer(self.pixels, dtype=np.uint8).reshape(square_shape)[:-margin, :, 2::-1] 
+        # just take one color channel # 1.5x faster than averaging. blue seems best.
+        self.pixels1 = self.pixels0[:,:,1] # shape is now (h',w'): 
+        # downsample: 
+        self.pixels2 = skimage.measure.block_reduce(self.pixels1, (self.DOWNSCALE,self.DOWNSCALE), np.mean) # shape is now (h',w'): 
+
+        # make monochrome: (values are: 0,255)        
+        self.mono_pixels = (self.pixels2 > 26).astype(np.uint8) * 255 # TODO: different threshold? 26 per [.299.587.114] sRGB weights
+
+        # keep a 3-frame history 
+        self.pixel_history = np.roll(self.pixel_history, 1, axis=2)  # cycle 'channel' from [old, older, oldest] to [oldest, old, older]
+        self.pixel_history[:,:,0] = self.mono_pixels # replace oldest with current
+
+        # make a 2-frame diff: (values are: 0,255,-255)
+        self.pixel_diff = self.pixel_history[:,:,0] - self.pixel_history[:,:,1]
+
+        # normalize diff from 0,255,-255 to -1,0,1
+        self.image_data = self.pixel_diff / 255
+
+        # assemble observation:
+        obs = {"image_data": self.image_data, "last_action": self.p1_input}
+        return obs
+
+
+
+    def _get_reward(self):
+        score = self._get_score()
+        lives = self._get_lives()
+        reward = lives - self.last_lives
+        reward += (score - self.last_score) / 20_000 # there's a new life every 20k points so points are propotional 
+        self.last_score = score 
+        self.last_lives = lives 
+        return reward
+
+
+    def _get_truncated(self):  
+        loading = self.mem[self.FULLY_LOADED_ADDR] != 0xE8 
+        game_over = self.mem[self.GAME_OVER_ADDR] & 0b1000_0000 >> 7 == 0
+        return loading or game_over
+
+
     def step(self, action=None):
         """ Execute one time step within the environment.  """
 
         if action: 
-            self._set_action(action)    
+            self.p1_input = self.actions[action] # self.p1_input is picked up by the emulator in input_callback
         
         if self.render_mode == "human": 
             self._process_input()# Override agent actions with user input 
 
-        # step through the coming frames with input supplied by self.p1_input via input_callback
+        # step through the coming frames (emulator will notice any new self.p1_input via the input_callback)
         for _ in range(self.FRAMES_PER_STEP): 
             self.session.run()
 
-        # make 3-frame history
-        pixels = self._get_frame() # resulting frame
-        self.pixel_history = np.roll(self.pixel_history, 1, axis=0)  # cycle 'channel' from [old, older, oldest] to [oldest, old, older]
-        self.pixel_history[0] = pixels # replace oldest with current observation
+        obs = self._get_observation()
 
-        # Extract state information
-        score = self._get_score()
-        lives = self._get_lives()
+        rew = self._get_reward()
 
-        # Define reward
-        reward = lives - self.last_lives
-        reward += (score - self.last_score) / 20_000 # there's a new life every 20k points so points are propotional 
-
-        self.last_score = score 
-        self.last_lives = lives 
+        trunc = self._get_truncated() 
 
         # Additional info
-        info = {'score': score, 'lives': lives}
-        truncated = False  # Modify as needed 
-        done = (lives == 0) 
+        info = {'score': self.last_score, 'lives': self.last_lives}
+        done = (self.last_lives == 0) 
 
-        return pixels, reward, done, truncated, info
+        return obs, rew, done, trunc, info
 
 
     def reset(self):
@@ -175,7 +219,7 @@ class JoustEnv(gym.Env):
         mode = self.render_mode if mode == '' else mode
         match mode:
             case 'rgb_array':
-                return np.transpose(self.pixel_history, (1, 2, 0))  # return last 3 frames as a single 'color-coded' image of motion
+                return self.pixel_history 
             case 'human':
                 SCALE = 2
                 if not hasattr(self, 'screen') : # first time render call
@@ -184,15 +228,15 @@ class JoustEnv(gym.Env):
                     pg.display.set_caption('JoustEnv Visualization')
                     self.font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 16)
                     self.tiny_font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 14)
-                    self.surface = pg.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
+                    self.surface = pg.Surface((self.pixel_history.shape[0], self.pixel_history.shape[1]))
 
                 for event in pg.event.get([pg.QUIT]): pg.quit(); return
-                pg.surfarray.blit_array(self.surface, np.transpose(self.pixel_history, (1, 2, 0)))
+                pg.surfarray.blit_array(self.surface, self.pixel_history)
                 transformed_surface = pg.transform.flip(pg.transform.rotate(self.surface, -90), True, False)
                 scaled_surface = pg.transform.scale(transformed_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
                 self.screen.blit(scaled_surface, (0, 0))
                 self.stats_surface = self.font.render(
-                    f"Lives: {self.last_lives} Score: {self.last_score} Coin: {self.mem[self.CREDITS_ADDR]}",
+                    f"Lives: {self.last_lives} Score: {self.last_score} Coin: {self.mem[self.CREDITS_ADDR]} Over: {not self._get_truncated()}",
                     True, (255, 255, 255)
                 )
                 self.input_surface = self.tiny_font.render(f"{self.p1_input}", True, (255, 255, 255))
@@ -209,9 +253,6 @@ class JoustEnv(gym.Env):
             pg.quit()
         self.session.__exit__(None, None, None)
         
-    def _set_action(self, action):
-        """ Convert and set the discrete action for the emulator.  """
-        self.p1_input = self.actions[action]
 
     def _process_input(self):
         """ Process Pygame events and update self.p1_input based on user input. """
@@ -248,15 +289,8 @@ class JoustEnv(gym.Env):
     def _get_frame(self):
         """ Capture the current video frame from the emulator.  """
         # framebuf = self.session.video.screenshot().data
-        framebuf = self.session.video._current._frame # this is more direct framebuffer access but yields square dimensions unconverted to RGB
-        square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer is large enough to be as tall as it is wide with margins, and 4 channels
-        margin = (self.WIDTH-self.HEIGHT)
-        # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB, and crop off the top/bottom margins
-        pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[:-margin, :, 2::-1] 
-        # pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
-        pixels2 = pixels1[:,:,1:2] # just take one color channel # 1.5x faster than mean
-        pixels3 = np.moveaxis(pixels2, -1, 0) #make channel first as per ML convention;   shape is now (1,h,w) 
-        return pixels3 
+        return self.session.video._current._frame # this is more direct framebuffer access but yields square dimensions unconverted to RGB
+
 
     def _get_score(self):
         """ Retrieve the current score from the emulator's memory.  """
@@ -269,28 +303,19 @@ class JoustEnv(gym.Env):
         score_bytes = self.mem[self.SCORE_MOST_SIG_ADDR:self.SCORE_MOST_SIG_ADDR+5]
         return sum(self._bcd_to_int(b) * 10**(6-(2*i)) for i, b in enumerate(score_bytes))
 
+
     def _get_lives(self):
         """ Retrieve the current number of lives from the emulator's memory.  """
-        if self.mem is None: return 0
         lives = self.mem[self.P1_LIVES_ADDR] 
         return lives
 
+
     def _print_memory_block(self):
         """ Print a block of memory for debugging purposes.  """
-        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)# hold a reference to core's memory 
-        if self.mem is None: return
+        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)
         for i in range(0, len(self.mem), 16):
             print(f"{i:04X}: {' '.join(f'{byte:02X}' for byte in self.mem[i:i+16])}")
 
-    def _check_done(self):
-        """ Determine if the game has ended.  """
-        lives = self._get_lives()
-        return lives <= 0
-
-    def _compute_reward(self, score, lives):
-        """ Compute the reward based on the current state.  """
-        # Example: Reward based solely on score
-        return score
 
     @staticmethod
     def _bcd_to_int(bcd_value):
@@ -299,23 +324,24 @@ class JoustEnv(gym.Env):
         # BCD amounts to "the hex formated number, read as decimal (after the 0x part)"
         # try: return int(hex(bcd_value)[2:])
         # except: return 0 # don't want this to fail when scrambled memory is ready during boot sequence
-        return (bcd_value >> 4) * 10 + (bcd_value & 0x0F) # faster version
+        return (bcd_value>>4)*10 + (bcd_value & 0x0F) # faster version
 
 # Example usage
 if __name__ == "__main__":
 
     env = JoustEnv(render_mode='human')
 
-    for epi_count in range(1_000_000):
+    # try:
+    for epi_count in range(1_000):
         observation = env.reset()
         done, truncated, total_reward = False, False, 0
         epi_steps=0
         epi_start = time.time()
-        while not (done or truncated):
+        while True:#not (done or truncated):
             epi_steps += 1
             action = env.action_space.sample()  # Replace with trained agent's action
             # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. need last_action as an input(?)
-            # action = None 
+            action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
             if env.render_mode=='human': env.render()
@@ -324,5 +350,13 @@ if __name__ == "__main__":
         aps = epi_steps / epi_secs
         fps = aps*env.FRAMES_PER_STEP 
         print(f"Epi {epi_count + 1}: Rew: {total_reward:.2f}, FPS: {fps:.0f}, APS: {aps:.0f}")
+    # except :
+    #     pass
 
     env.close()
+
+
+# TODO
+# - decide obs space (3 hist frames? 2? 1 diff frame?), past actions 
+# - try sb3 ppo
+# - try ppo from cleanrl
