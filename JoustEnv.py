@@ -21,6 +21,8 @@ class JoustEnv(gym.Env):
                             # but best way to handle this is probably to feed it a history of [?] previous inputs in the observation
                             # and let it figure out what sequences do what
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
+    START_LIVES = 5
+
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
     ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
     CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
@@ -28,9 +30,6 @@ class JoustEnv(gym.Env):
     START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
-
-    BOOT_FRAMES = 700 
-    READY_UP_FRAMES = 225
 
     P1_LIVES_ADDR = 0xE252#|U1      
     SCORE_MOST_SIG_ADDR = 0xE24C #|U1
@@ -48,7 +47,7 @@ class JoustEnv(gym.Env):
 
         # Initialize Pygame
         pg.init()
-        self.clock = pg.time.Clock()
+        self.pg_clock = pg.time.Clock()
 
         # Define action space: Example for Joust 
         # Adjust the number of actions based on actual game controls
@@ -140,6 +139,8 @@ class JoustEnv(gym.Env):
         self.session.run()
         initial_frame = self._get_frame()
         self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)# hold a reference to core's memory 
+        self.last_score = 0  
+        self.last_lives = self.START_LIVES 
         return initial_frame
 
 
@@ -172,20 +173,19 @@ class JoustEnv(gym.Env):
 
     def render(self, mode=''):
         mode = self.render_mode if mode == '' else mode
-        if mode == 'rgb_array':
-            return np.transpose(self.pixel_history, (1, 2, 0))  # return last 3 frames as a single 'color-coded' image of motion
-        elif mode == 'human':
-            SCALE = 2
-            if not hasattr(self, 'screen') or not pg.get_init():
-                pg.init()
-                pg.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE), pg.HWSURFACE) # hw surface ~2x faster ?
-                self.screen = pg.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE))
-                pg.display.set_caption('JoustEnv Visualization')
-                self.clock = pg.time.Clock()
-                self.font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 16)
-                self.tiny_font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 14)
-                self.surface = pg.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
-            try:
+        match mode:
+            case 'rgb_array':
+                return np.transpose(self.pixel_history, (1, 2, 0))  # return last 3 frames as a single 'color-coded' image of motion
+            case 'human':
+                SCALE = 2
+                if not hasattr(self, 'screen') : # first time render call
+                    pg.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE), pg.HWSURFACE) # hw surface ~2x faster ?
+                    self.screen = pg.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE))
+                    pg.display.set_caption('JoustEnv Visualization')
+                    self.font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 16)
+                    self.tiny_font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 14)
+                    self.surface = pg.Surface((self.pixel_history.shape[1], self.pixel_history.shape[2]))
+
                 for event in pg.event.get([pg.QUIT]): pg.quit(); return
                 pg.surfarray.blit_array(self.surface, np.transpose(self.pixel_history, (1, 2, 0)))
                 transformed_surface = pg.transform.flip(pg.transform.rotate(self.surface, -90), True, False)
@@ -197,13 +197,11 @@ class JoustEnv(gym.Env):
                 )
                 self.input_surface = self.tiny_font.render(f"{self.p1_input}", True, (255, 255, 255))
                 self.input_surface = self.tiny_font.render(f"{self.p1_input.mask:016b}", True, (255, 255, 255))
-                # self.last_text_surface_value = (self.last_lives, self.last_score)
                 self.screen.blit(self.stats_surface, (10, 10))
                 self.screen.blit(self.input_surface, (10, self.HEIGHT*SCALE - 17))
                 pg.display.flip()
-                if self.THROTTLE: self.clock.tick(60/self.FRAMES_PER_STEP) 
-            except (pg.error, ZeroDivisionError) :
-                pass
+                if self.THROTTLE: self.pg_clock.tick(60/self.FRAMES_PER_STEP) 
+
 
     def close(self):
         """ Perform any necessary cleanup.  """
@@ -250,11 +248,10 @@ class JoustEnv(gym.Env):
     def _get_frame(self):
         """ Capture the current video frame from the emulator.  """
         # framebuf = self.session.video.screenshot().data
-        framebuf = self.session.video._current._frame # this is more direct framebuffer access but square dimensions and unconverted to RGB
+        framebuf = self.session.video._current._frame # this is more direct framebuffer access but yields square dimensions unconverted to RGB
         square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer is large enough to be as tall as it is wide with margins, and 4 channels
-        margin = (self.WIDTH-self.HEIGHT)#//2 #eg.292-240/2
+        margin = (self.WIDTH-self.HEIGHT)
         # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB, and crop off the top/bottom margins
-        # pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[margin:-margin,:,2::-1] 
         pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[:-margin, :, 2::-1] 
         # pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
         pixels2 = pixels1[:,:,1:2] # just take one color channel # 1.5x faster than mean
