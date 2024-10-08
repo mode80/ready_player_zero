@@ -14,7 +14,7 @@ from itertools import repeat
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
-    THROTTLE = True         # limit to 60 FTS (when in render_mode = 'human')?
+    THROTTLE = False        # limit to 60 FTS (when in render_mode = 'human')?
     DOWNSCALE = 1           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
@@ -23,9 +23,8 @@ class JoustEnv(gym.Env):
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
     ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
-    # CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/forked/stable-retro/cores/arcade/fbneo_libretro.dylib' # debug. needs own save state
-    CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
+    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
+    # CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
     START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
@@ -315,11 +314,11 @@ if __name__ == "__main__":
         done, truncated, total_reward = False, False, 0
         epi_steps=0
         epi_start = time.time()
-        while True:#not (done or truncated):
+        while not (done or truncated):
             epi_steps += 1
             action = env.action_space.sample()  # Replace with trained agent's action
             # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. need last_action as an input(?)
-            action = None 
+            # action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
             if env.render_mode=='human': env.render()
