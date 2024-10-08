@@ -20,40 +20,28 @@ class JoustEnv(gym.Env):
                             # Joust might react based on a count of input flags over the last [?] frames 
                             # but best way to handle this is probably to feed it a history of [?] previous inputs in the observation
                             # and let it figure out what sequences do what
-
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
     # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
     CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/forked/stable-retro/cores/arcade/fbneo_libretro.dylib'
-    # ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
-    ROM_PATH= '/Users/user/mame/roms/joust.zip'
-    SYSTEM_PATH= '/tmp'#/Users/user/Documents/RetroArch/system'
-    ASSETS_PATH= '/tmp'#/Users/user/Documents/RetroArch/assets'
+    ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
+    # ROM_PATH= '/Users/user/mame/roms/joust.zip'
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
-    PLAYLIST_PATH= '/tmp'#'/Users/user/Documents/RetroArch/playlists'
+    SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
     SAVED_GAME_FILE = './joust_start_1p.save'
 
     BOOT_FRAMES = 700 
     READY_UP_FRAMES = 225
 
     P1_LIVES_ADDR = 0xE252#|U1      
-    SCORE_HI4_ADDR = 0xE24B #<D2    
-    SCORE_LOW4_ADDR = 0xE24D #<D2   
-
-    SCORE_LOWEST2_ADDR = 0xE24F #|U1
-    SCORE_LOW2_ADDR = 0xE24E #|U1
-    SCORE_HIGH2_ADDR = 0xE24D #|U1
-    SCORE_HIGHEST2_ADDR = 0xE24C #|U1
-
+    SCORE_MOST_SIG_ADDR = 0xE24C #|U1
     CREDITS_ADDR = 0xe2f2 #|U1
-
-    
  
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
     FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
     COIN, START = JoypadState(select=True), JoypadState(start=True)
 
-
     metadata = {'render.modes': ['human', 'rgb_array']}
+
 
     def __init__(self, render_mode=None):
         super(JoustEnv, self).__init__()
@@ -274,13 +262,14 @@ class JoustEnv(gym.Env):
 
     def _get_score(self):
         """ Retrieve the current score from the emulator's memory.  """
-        if self.mem is None: return 0
-        ______XX = self.mem[self.SCORE_LOWEST2_ADDR] 
-        ____XX__ = self.mem[self.SCORE_LOW2_ADDR] 
-        __XX____ = self.mem[self.SCORE_HIGH2_ADDR] 
-        XX______ = self.mem[self.SCORE_HIGHEST2_ADDR] 
-        score = self._bcd_to_int(XX______)*1000000 + self._bcd_to_int(__XX____)*10000 + self._bcd_to_int(____XX__)*100 + self._bcd_to_int(______XX)
-        return score
+        # ______XX = self.mem[self.SCORE_LEAST_SIG_ADDR] 
+        # ____XX__ = self.mem[self.SCORE_LESS_SIG_ADDR] 
+        # __XX____ = self.mem[self.SCORE_MORE_SIG_ADDR] 
+        # XX______ = self.mem[self.SCORE_MOST_SIG_ADDR] 
+        # return = self._bcd_to_int(XX______)*1000000 + self._bcd_to_int(__XX____)*10000 + self._bcd_to_int(____XX__)*100 + self._bcd_to_int(______XX)
+        # # Faster version:
+        score_bytes = self.mem[self.SCORE_MOST_SIG_ADDR:self.SCORE_MOST_SIG_ADDR+5]
+        return sum(self._bcd_to_int(b) * 10**(6-(2*i)) for i, b in enumerate(score_bytes))
 
     def _get_lives(self):
         """ Retrieve the current number of lives from the emulator's memory.  """
@@ -305,15 +294,14 @@ class JoustEnv(gym.Env):
         # Example: Reward based solely on score
         return score
 
-    def _bcd_to_int(self,bcd_value):
+    @staticmethod
+    def _bcd_to_int(bcd_value):
         """ Convert BCD (Binary Coded Decimal) to a decimal int """
         # Old MAME roms often store numbers in memory as BCD
         # BCD amounts to "the hex formated number, read as decimal (after the 0x part)"
-        try:
-            return int(hex(bcd_value)[2:])
-        except:
-            return 0 # don't want this to fail when scrambled memory is ready during boot sequence
-
+        # try: return int(hex(bcd_value)[2:])
+        # except: return 0 # don't want this to fail when scrambled memory is ready during boot sequence
+        return (bcd_value >> 4) * 10 + (bcd_value & 0x0F) # faster version
 
 # Example usage
 if __name__ == "__main__":
