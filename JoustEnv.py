@@ -21,13 +21,14 @@ class JoustEnv(gym.Env):
                             # but best way to handle this is probably to feed it a history of [?] previous inputs in the observation
                             # and let it figure out what sequences do what
     WIDTH, HEIGHT = 292, 240 # pixel dimensions of the screen for this rom
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib'
-    CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/forked/stable-retro/cores/arcade/fbneo_libretro.dylib'
-    ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
+    ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
+    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
+    # CORE_PATH= '/Users/user/Library/CloudStorage/Dropbox/code/forked/stable-retro/cores/arcade/fbneo_libretro.dylib' # debug. needs own save state
+    CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
+    START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
-    SAVED_GAME_FILE = './joust_start_1p.save'
 
     BOOT_FRAMES = 700 
     READY_UP_FRAMES = 225
@@ -135,7 +136,7 @@ class JoustEnv(gym.Env):
     def reset(self):
         """ Reset the state of the environment to an initial state.  """
         self.session.reset()
-        try: self._load_game(self.SAVED_GAME_FILE)
+        try: self._load_game(self.START_STATE_FILE)
         except: pass
         self.session.run()
         initial_frame = self._get_frame()
@@ -227,7 +228,7 @@ class JoustEnv(gym.Env):
                 self._print_memory_block()
 
             if (event.type == pg.KEYDOWN and event.key == pg.K_F4):
-                self._save_game(self.SAVED_GAME_FILE)
+                self._save_game(self.START_STATE_FILE)
 
             if (event.type == pg.KEYDOWN and event.key == pg.K_F5):
                 self.mem[self.CREDITS_ADDR]=0x1
@@ -252,9 +253,10 @@ class JoustEnv(gym.Env):
         # framebuf = self.session.video.screenshot().data
         framebuf = self.session.video._current._frame # this is more direct framebuffer access but square dimensions and unconverted to RGB
         square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer is large enough to be as tall as it is wide with margins, and 4 channels
-        margin = (self.WIDTH-self.HEIGHT)//2 #eg.292-240/2
+        margin = (self.WIDTH-self.HEIGHT)#//2 #eg.292-240/2
         # unflatten to row,col,channel; # keep all rows&cols, but transform 'ABGR' to RGB, and crop off the top/bottom margins
-        pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[margin:-margin,:,2::-1] 
+        # pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[margin:-margin,:,2::-1] 
+        pixels1 = np.frombuffer(framebuf, dtype=np.uint8).reshape(square_shape)[:-margin, :, 2::-1] 
         # pixels2 = skimage.measure.block_reduce(pixels1, (self.DOWNSCALE,self.DOWNSCALE,3), np.mean) # downlsampled & grayscaled via mean;  shape now (h',w',1): 
         pixels2 = pixels1[:,:,1:2] # just take one color channel # 1.5x faster than mean
         pixels3 = np.moveaxis(pixels2, -1, 0) #make channel first as per ML convention;   shape is now (1,h,w) 
@@ -306,18 +308,18 @@ class JoustEnv(gym.Env):
 # Example usage
 if __name__ == "__main__":
 
-    env = JoustEnv()#render_mode='human')
+    env = JoustEnv(render_mode='human')
 
     for epi_count in range(1_000_000):
         observation = env.reset()
         done, truncated, total_reward = False, False, 0
         epi_steps=0
         epi_start = time.time()
-        while not (done or truncated):
+        while True:#not (done or truncated):
             epi_steps += 1
             action = env.action_space.sample()  # Replace with trained agent's action
             # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. need last_action as an input(?)
-            # action = None 
+            action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
             if env.render_mode=='human': env.render()
