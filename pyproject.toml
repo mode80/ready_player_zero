@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "classic arcade game reinforcement learning"
 authors = ["mode80 <mode80>"]
 readme = "README.md"
+package-mode = false # set to true to package the environment for release
 
 [tool.poetry.dependencies]
 python = "^3.11"

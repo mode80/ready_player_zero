@@ -24,14 +24,11 @@ class JoustEnv(gym.Env):
     START_LIVES = 5
 
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
-    ROM_PATH= '/home/user/cloned/stable-retro/retro/data/stable/Joust-Arcade/joust.zip'
-    CORE_PATH= '/home/user/snap/retroarch/current/.config/retroarch/cores/fbneo_libretro.so' 
-    # ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
+    ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
+    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
     # CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
     START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
-    SAVE_PATH= '/home/user/snap/retroarch/current/.config/retroarch/saves'
-    # SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
+    SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
 
     P1_LIVES_ADDR = 0xE252#|U1      
@@ -376,7 +373,7 @@ def make_env(rank, seed=0):
     return _init
 
 def sb3_ppo():
-    num_envs = 42 
+    num_envs = 16 
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
     
     total_timesteps = 0
