@@ -14,7 +14,7 @@ class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
     THROTTLE = True         # limit to 60 FTS (when in render_mode = 'human')?
-    DOWNSCALE = 2           # Downscale the image by this factor (> 1 to speed up training)
+    DOWNSCALE = 4           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
                             # but best way to handle this is probably to feed it a history of [?] previous inputs in the observation
@@ -24,9 +24,9 @@ class JoustEnv(gym.Env):
 
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
     ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
-    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
-    CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
-    START_STATE_FILE = './states/joust_start_1p_debug.state' # use './states/joust_start_1p_debug.state' for debug dylib
+    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
+    # CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
+    START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
     SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
 
@@ -34,7 +34,7 @@ class JoustEnv(gym.Env):
     SCORE_MOST_SIG_ADDR = 0xE24C #|U1
     CREDITS_ADDR = 0xe2f2 #|U1
     FULLY_LOADED_ADDR = 0x10207 #|U1  e8 = fully loaded
-    GAME_OVER_ADDR = 0x00e290 #|U1  bit 7 :  0 = Attract, 1 = Playing
+    PLAYING_ADDR = 0x00e290 #|U1  bit 7 :  0 = Attract, 1 = Playing
 
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
     FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
@@ -53,18 +53,19 @@ class JoustEnv(gym.Env):
         # Define action space: Example for Joust 
         # Adjust the number of actions based on actual game controls
         # self.actions = [self.NOOP, self.FLAP]#, self.FLAP_LEFT, self.FLAP_RIGHT]
-        self.actions = [self.NOOP, self.FLAP, self.LEFT, self.RIGHT, self.FLAP_LEFT, self.FLAP_RIGHT]
-        self.action_space = gym.spaces.Discrete(len(self.actions))
+        self.action_inputs = [self.NOOP, self.FLAP, self.LEFT, self.RIGHT, self.FLAP_LEFT, self.FLAP_RIGHT]
+        self.action_space = gym.spaces.Discrete(len(self.action_inputs))
 
-        image_space = gym.spaces.Box(
-            low=-1.0, high=1.0,
+        image_data_space = gym.spaces.Box(
+            low=0.0, high=1.0,
             shape=(self.HEIGHT//self.DOWNSCALE, self.WIDTH//self.DOWNSCALE), 
             dtype=np.float32
         )
+        action_history_space = gym.spaces.MultiBinary( (len(self.action_inputs), 5) )
 
         self.observation_space = gym.spaces.Dict({
-            "image_data": image_space,
-            "last_action": self.action_space
+            "image_data": image_data_space,
+            "action_history": action_history_space
         })
 
 
@@ -80,7 +81,8 @@ class JoustEnv(gym.Env):
 
         # for rendering
         self.render_mode = render_mode
-        self.pixel_history = np.zeros((image_space.shape[0], image_space.shape[1], 3), dtype=np.uint8)
+        self.pixel_history = np.zeros( (image_data_space.shape[0], image_data_space.shape[1], 3), dtype=np.uint8)
+        self.action_history = np.zeros( (len(self.action_inputs),3), dtype=np.uint8)
 
         # Initialize libretro session with configured drivers
         self.session = ( libretro
@@ -101,7 +103,7 @@ class JoustEnv(gym.Env):
 
         self.session.__enter__()
 
-    def _get_observation(self):
+    def _get_observation(self, act):
 
         self.pixels = self._get_frame() # (use self persistant vars to avoid repeated allocations during tight-loop processing )
         square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer comes back tall as it is wide, with empty bottom margin, and 4 channels
@@ -115,20 +117,26 @@ class JoustEnv(gym.Env):
         self.pixels2 = skimage.measure.block_reduce(self.pixels1, (self.DOWNSCALE,self.DOWNSCALE), np.mean) # shape is now (h',w'): 
 
         # make monochrome: (values are: 0,255)        
-        self.mono_pixels = (self.pixels2 > 26).astype(np.uint8) * 255 # TODO: different threshold? 26 per [.299.587.114] sRGB weights
+        self.mono_pixels = (self.pixels2 > 26).astype(np.uint8) * 255 #  threshold 26 per common [.299,.587,.114] color->grayscale weights
 
         # keep a 3-frame history 
         self.pixel_history = np.roll(self.pixel_history, 1, axis=2)  # cycle 'channel' from [old, older, oldest] to [oldest, old, older]
         self.pixel_history[:,:,0] = self.mono_pixels # replace oldest with current
 
-        # make a 2-frame diff: (values are: 0,255,-255)
-        self.pixel_diff = self.pixel_history[:,:,0] - self.pixel_history[:,:,1]
+        # make a single frame with "trailers" to indicate motion
+        self.viz_diff = self.pixel_history * np.array([1.0, 0.6, 0.3])[None,None,:] 
+        self.viz_diff = np.max(self.viz_diff, axis=2).astype(np.uint8)
 
-        # normalize diff from 0,255,-255 to -1,0,1
-        self.image_data = self.pixel_diff / 255
+        # normalize it to 0,1
+        self.image_data = self.viz_diff / 255
+
+        # assemble inputs into 1-hot vector:
+        one_hot_action = np.array([act==i for i in range(len(self.action_inputs))], dtype=np.uint8)
+        self.action_history = np.roll(self.action_history, 1, axis=1)
+        self.action_history[:,0] = one_hot_action
 
         # assemble observation:
-        obs = {"image_data": self.image_data, "last_action": self.p1_input}
+        obs = {"image_data": self.image_data, "action_history": self.action_history}
         return obs
 
 
@@ -143,34 +151,29 @@ class JoustEnv(gym.Env):
         return reward
 
 
-    def _get_truncated(self):  
-        loading = self.mem[self.FULLY_LOADED_ADDR] != 0xE8 
-        game_over = self.mem[self.GAME_OVER_ADDR] & 0b1000_0000 >> 7 == 0
-        return loading or game_over
-
+    def _get_truncated(self):   
+        # playing = self.mem[self.PLAYING_ADDR] & 0b0100_0000 == 0
+        # loaded = self.mem[self.FULLY_LOADED_ADDR] == 0xE8 
+        # return loaded and not playing 
+        return False
 
     def step(self, action=None):
         """ Execute one time step within the environment.  """
-
         if action: 
-            self.p1_input = self.actions[action] # self.p1_input is picked up by the emulator in input_callback
+            self.p1_input = self.action_inputs[action] # self.p1_input is picked up by the emulator in input_callback
         
         if self.render_mode == "human": 
             self._process_input()# Override agent actions with user input 
 
-        # step through the coming frames (emulator will notice any new self.p1_input via the input_callback)
+        # step through _ frames (emulator will notice any new self.p1_input via the input_callback)
         for _ in range(self.FRAMES_PER_STEP): 
             self.session.run()
 
-        obs = self._get_observation()
-
+        obs = self._get_observation(action)
         rew = self._get_reward()
-
         trunc = self._get_truncated() 
-
-        # Additional info
+        done = self._get_done()
         info = {'score': self.last_score, 'lives': self.last_lives}
-        done = (self.last_lives == 0) 
 
         return obs, rew, done, trunc, info
 
@@ -226,21 +229,22 @@ class JoustEnv(gym.Env):
                     pg.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE), pg.HWSURFACE) # hw surface ~2x faster ?
                     self.screen = pg.display.set_mode((self.WIDTH*SCALE, self.HEIGHT*SCALE))
                     pg.display.set_caption('JoustEnv Visualization')
-                    self.font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 16)
-                    self.tiny_font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 14)
-                    self.surface = pg.Surface((self.pixel_history.shape[0], self.pixel_history.shape[1]))
+                    self.font = pg.font.Font(pg.font.match_font('couriernew', bold=True), 14)
+                    self.surface = pg.Surface(self.viz_diff.shape)#((self.pixel_history.shape[0], self.pixel_history.shape[1]))
 
                 for event in pg.event.get([pg.QUIT]): pg.quit(); return
-                pg.surfarray.blit_array(self.surface, self.pixel_history)
+                pg.surfarray.blit_array(self.surface, self.viz_diff[...,None].repeat(3, axis=2))#self.pixel_history)
                 transformed_surface = pg.transform.flip(pg.transform.rotate(self.surface, -90), True, False)
                 scaled_surface = pg.transform.scale(transformed_surface, (self.WIDTH*SCALE, self.HEIGHT*SCALE))
                 self.screen.blit(scaled_surface, (0, 0))
-                self.stats_surface = self.font.render(
-                    f"Lives: {self.last_lives} Score: {self.last_score} Coin: {self.mem[self.CREDITS_ADDR]} Over: {not self._get_truncated()}",
-                    True, (255, 255, 255)
-                )
-                self.input_surface = self.tiny_font.render(f"{self.p1_input}", True, (255, 255, 255))
-                self.input_surface = self.tiny_font.render(f"{self.p1_input.mask:016b}", True, (255, 255, 255))
+                self.stats_surface = self.font.render((
+                    f"Lives:{self.last_lives} " 
+                    f"Score:{self.last_score} " 
+                    f"Coin:{self.mem[self.CREDITS_ADDR]} " 
+                    f"Trunc:{self._get_truncated():01b} "
+                    f"Done:{self._get_done():01b} "
+                ), True, (100, 100, 255))
+                self.input_surface = self.font.render(f"{self.p1_input.mask:016b}", True, (100, 100, 255))
                 self.screen.blit(self.stats_surface, (10, 10))
                 self.screen.blit(self.input_surface, (10, self.HEIGHT*SCALE - 17))
                 pg.display.flip()
@@ -301,13 +305,16 @@ class JoustEnv(gym.Env):
         # return = self._bcd_to_int(XX______)*1000000 + self._bcd_to_int(__XX____)*10000 + self._bcd_to_int(____XX__)*100 + self._bcd_to_int(______XX)
         # # Faster version:
         score_bytes = self.mem[self.SCORE_MOST_SIG_ADDR:self.SCORE_MOST_SIG_ADDR+5]
-        return sum(self._bcd_to_int(b) * 10**(6-(2*i)) for i, b in enumerate(score_bytes))
+        return int(sum(self._bcd_to_int(b) * 10**(6-(2*i)) for i, b in enumerate(score_bytes)))
 
 
     def _get_lives(self):
         """ Retrieve the current number of lives from the emulator's memory.  """
         lives = self.mem[self.P1_LIVES_ADDR] 
         return lives
+
+    def _get_done(self):
+        return self.last_lives == 0
 
 
     def _print_memory_block(self):
@@ -331,17 +338,16 @@ if __name__ == "__main__":
 
     env = JoustEnv(render_mode='human')
 
-    # try:
     for epi_count in range(1_000):
         observation = env.reset()
         done, truncated, total_reward = False, False, 0
         epi_steps=0
         epi_start = time.time()
-        while True:#not (done or truncated):
+        while not (done or truncated):
             epi_steps += 1
             action = env.action_space.sample()  # Replace with trained agent's action
-            # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. need last_action as an input(?)
-            action = None 
+            # action = [1,0,1,0][i%4] # without interleaving actions, they don't repeat. 
+            # action = None 
             observation, reward, done, truncated, info = env.step(action)
             total_reward += reward
             if env.render_mode=='human': env.render()
@@ -350,13 +356,10 @@ if __name__ == "__main__":
         aps = epi_steps / epi_secs
         fps = aps*env.FRAMES_PER_STEP 
         print(f"Epi {epi_count + 1}: Rew: {total_reward:.2f}, FPS: {fps:.0f}, APS: {aps:.0f}")
-    # except :
-    #     pass
 
     env.close()
 
 
 # TODO
-# - decide obs space (3 hist frames? 2? 1 diff frame?), past actions 
 # - try sb3 ppo
 # - try ppo from cleanrl
