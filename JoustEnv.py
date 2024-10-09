@@ -10,6 +10,9 @@ from libretro.h import *
 from libretro.drivers import GeneratorInputDriver, UnformattedLogDriver
 from itertools import repeat
 import stable_baselines3 as sb3
+from stable_baselines3.common.vec_env import VecMonitor
+
+os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES' # OSX bug :/
 
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
@@ -375,6 +378,7 @@ def make_env(rank, seed=0):
 def sb3_ppo():
     num_envs = 16 
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    env = VecMonitor(env)  # Add this line to enable monitoring
     
     total_timesteps = 0
     
@@ -383,14 +387,18 @@ def sb3_ppo():
         print("Loaded existing model")
     else:
         model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard",
-                        n_steps=2048 // num_envs, device='cpu')  
+                        n_steps=2048 // num_envs, device='cpu', 
+                        learning_rate=3e-4,  
+                        batch_size=64,  
+                        n_epochs=10,  
+                        gamma=0.99,  
+                        gae_lambda=0.95)  
         print("Created new model")
 
     for i in range(500):
         model.learn(total_timesteps=1_000_000, reset_num_timesteps=False, tb_log_name=f"PPO_run_{i}")
         total_timesteps += 1_000_000
         model.save("ppo_joust")
-        print(f"Iteration {i+1}/500 completed. Total timesteps: {total_timesteps}")
 
     env.close()
 
