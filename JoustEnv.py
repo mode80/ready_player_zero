@@ -361,15 +361,29 @@ def example_loop():
     env.close()
 
 
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.utils import set_random_seed
+
+def make_env(rank, seed=0):
+    def _init():
+        env = JoustEnv(render_mode=None)  
+        env.reset(seed=(seed + rank))
+        return env
+    set_random_seed(seed)
+    return _init
+
 def sb3_ppo():
-    env = JoustEnv()#render_mode='human')
+    num_envs = 16 
+    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    
     total_timesteps = 0
     
     if os.path.exists("ppo_joust.zip"):
         model = sb3.PPO.load("ppo_joust", env=env)
         print("Loaded existing model")
     else:
-        model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard")
+        model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard",
+                        n_steps=2048 // num_envs)#, device='mps')  
         print("Created new model")
 
     for i in range(500):
