@@ -7,7 +7,7 @@ import libretro, skimage
 import os, logging, time
 from libretro import SessionBuilder, ExplicitPathDriver, JoypadState, InputDeviceFlag
 from libretro.h import * 
-from libretro.drivers import GeneratorInputDriver, UnformattedLogDriver, ModernGlVideoDriver
+from libretro.drivers import GeneratorInputDriver, UnformattedLogDriver
 from itertools import repeat
 import stable_baselines3 as sb3
 
@@ -24,11 +24,14 @@ class JoustEnv(gym.Env):
     START_LIVES = 5
 
     # ROM_PATH= '/Users/user/mame/roms/joust.zip'
-    ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
-    CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
+    ROM_PATH= '/home/user/cloned/stable-retro/retro/data/stable/Joust-Arcade/joust.zip'
+    CORE_PATH= '/home/user/snap/retroarch/current/.config/retroarch/cores/fbneo_libretro.so' 
+    # ROM_PATH= '/Users/user/Documents/RetroArch/fbneo/roms/arcade/joust.zip'
+    # CORE_PATH= '/Users/user/Library/Application Support/RetroArch/cores/fbneo_libretro.dylib' 
     # CORE_PATH= './ignore/FBNeo/src/burner/libretro/fbneo_libretro.dylib' # debug dylib. needs own save state
     START_STATE_FILE = './states/joust_start_1p.state' # use './states/joust_start_1p_debug.state' for debug dylib
-    SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
+    SAVE_PATH= '/home/user/snap/retroarch/current/.config/retroarch/saves'
+    # SAVE_PATH= '/Users/user/Documents/RetroArch/saves'
     SYSTEM_PATH = ASSETS_PATH = PLAYLIST_PATH = '/tmp' 
 
     P1_LIVES_ADDR = 0xE252#|U1      
@@ -373,7 +376,7 @@ def make_env(rank, seed=0):
     return _init
 
 def sb3_ppo():
-    num_envs = 16 
+    num_envs = 42 
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
     
     total_timesteps = 0
@@ -383,7 +386,7 @@ def sb3_ppo():
         print("Loaded existing model")
     else:
         model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard",
-                        n_steps=2048 // num_envs)#, device='mps')  
+                        n_steps=2048 // num_envs, device='cpu')  
         print("Created new model")
 
     for i in range(500):

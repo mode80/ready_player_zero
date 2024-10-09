@@ -10,3 +10,5 @@ venv/
 *.zip
 profile.*
 tensorboard/
+poetry.lock
+.env

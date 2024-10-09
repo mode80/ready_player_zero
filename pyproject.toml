@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "ready-player-zero"
+version = "0.1.0"
+description = "classic arcade game reinforcement learning"
+authors = ["mode80 <mode80>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+"libretro.py" = "^0.3.0"
+gymnasium = "^0.28.0"
+pygame = "^2.6.1"
+scikit-image = "^0.24.0"
+stable-baselines3 = "^2.3.2"
+tensorboard = "^2.18.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
