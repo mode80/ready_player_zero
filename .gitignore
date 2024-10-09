@@ -9,3 +9,4 @@ venv/
 *.tmp
 *.zip
 profile.*
+tensorboard/

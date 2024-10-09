@@ -9,11 +9,12 @@ from libretro import SessionBuilder, ExplicitPathDriver, JoypadState, InputDevic
 from libretro.h import * 
 from libretro.drivers import GeneratorInputDriver, UnformattedLogDriver, ModernGlVideoDriver
 from itertools import repeat
+import stable_baselines3 as sb3
 
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
-    THROTTLE = True        # limit to 60 FTS (when in render_mode = 'human')?
+    THROTTLE = False        # limit to 60 FTS (when in render_mode = 'human')?
     DOWNSCALE = 4           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
@@ -94,7 +95,7 @@ class JoustEnv(gym.Env):
 
         self.session.__enter__()
 
-    def reset(self):
+    def reset(self, seed=None):
         """ Reset the state of the environment to an initial state.  """
         self.session.reset()
         try: self._load_game(self.START_STATE_FILE)
@@ -102,14 +103,15 @@ class JoustEnv(gym.Env):
         self.last_score = 0
         self.last_lives = self.START_LIVES 
         data_shape = (*self.observation_space['image_data'].shape, 3)
-        self.pixel_history = np.zeros( data_shape, dtype=np.uint8)
-        self.input_history = np.zeros( (3,3), dtype=np.uint8)
+        self.pixel_history = np.zeros(data_shape, dtype=np.uint8)
+        self.input_history = np.zeros((3,3), dtype=np.int8)
         self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)# hold a reference to core's memory 
         self.session.run()
-        return self._get_observation(None)
+        obs = self._get_observation()
+        return (obs, {})
 
 
-    def _get_observation(self, act):
+    def _get_observation(self):
 
         self.pixels = self._get_frame() # (use self persistant vars to avoid repeated allocations during tight-loop processing )
         square_shape = (self.WIDTH, self.WIDTH, 4) # _frame buffer comes back tall as it is wide, with empty bottom margin, and 4 channels
@@ -146,7 +148,7 @@ class JoustEnv(gym.Env):
         self.input_history[0] = one_hot_input
 
         # assemble observation:
-        obs = {"image_data": self.image_data, "input_history": self.input_history}
+        obs = { "image_data": self.image_data.astype(np.float32), "input_history": self.input_history }
         return obs
 
 
@@ -179,7 +181,7 @@ class JoustEnv(gym.Env):
         for _ in range(self.FRAMES_PER_STEP): 
             self.session.run()
 
-        obs = self._get_observation(action)
+        obs = self._get_observation()
         rew = self._get_reward()
         trunc = self._get_truncated() 
         done = self._get_done()
@@ -332,9 +334,9 @@ class JoustEnv(gym.Env):
         # except: return 0 # don't want this to fail when scrambled memory is ready during boot sequence
         return (bcd_value>>4)*10 + (bcd_value & 0x0F) # faster version
 
-# Example usage
-if __name__ == "__main__":
 
+# Example usage
+def example_loop():
     env = JoustEnv(render_mode='human')
 
     for epi_count in range(1_000):
@@ -359,6 +361,26 @@ if __name__ == "__main__":
     env.close()
 
 
-# TODO
-# - try sb3 ppo
-# - try ppo from cleanrl
+def sb3_ppo():
+    env = JoustEnv()#render_mode='human')
+    total_timesteps = 0
+    
+    if os.path.exists("ppo_joust.zip"):
+        model = sb3.PPO.load("ppo_joust", env=env)
+        print("Loaded existing model")
+    else:
+        model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard")
+        print("Created new model")
+
+    for i in range(500):
+        model.learn(total_timesteps=1_000_000, reset_num_timesteps=False, tb_log_name=f"PPO_run_{i}")
+        total_timesteps += 1_000_000
+        model.save("ppo_joust")
+        print(f"Iteration {i+1}/500 completed. Total timesteps: {total_timesteps}")
+
+    env.close()
+
+
+if __name__ == "__main__":
+    sb3_ppo()
+    
