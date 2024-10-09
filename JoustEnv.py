@@ -13,7 +13,7 @@ from itertools import repeat
 class JoustEnv(gym.Env):
     """ Gym environment for the classic arcade game Joust using libretro.py.  """
 
-    THROTTLE = True         # limit to 60 FTS (when in render_mode = 'human')?
+    THROTTLE = True        # limit to 60 FTS (when in render_mode = 'human')?
     DOWNSCALE = 4           # Downscale the image by this factor (> 1 to speed up training)
     FRAMES_PER_STEP = 5     # 12 press-or-release actions (6 complete button presses) per second is comparable to human reflexes 
                             # Joust might react based on a count of input flags over the last [?] frames 
@@ -37,7 +37,7 @@ class JoustEnv(gym.Env):
     PLAYING_ADDR = 0x00e290 #|U1  bit 7 :  0 = Attract, 1 = Playing
 
     NOOP, LEFT, RIGHT = JoypadState(), JoypadState(left=True), JoypadState(right=True)
-    FLAP, FLAP_LEFT, FLAP_RIGHT, = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
+    FLAP, FLAP_LEFT, FLAP_RIGHT = JoypadState(b=True), JoypadState(b=True, left=True), JoypadState(b=True, right=True)
     COIN, START = JoypadState(select=True), JoypadState(start=True)
 
     metadata = {'render.modes': ['human', 'rgb_array']}
@@ -50,39 +50,30 @@ class JoustEnv(gym.Env):
         pg.init()
         self.pg_clock = pg.time.Clock()
 
-        # Define action space: Example for Joust 
-        # Adjust the number of actions based on actual game controls
-        # self.actions = [self.NOOP, self.FLAP]#, self.FLAP_LEFT, self.FLAP_RIGHT]
+        # Define action/observation space
         self.action_inputs = [self.NOOP, self.FLAP, self.LEFT, self.RIGHT, self.FLAP_LEFT, self.FLAP_RIGHT]
         self.action_space = gym.spaces.Discrete(len(self.action_inputs))
-
         image_data_space = gym.spaces.Box(
             low=0.0, high=1.0,
             shape=(self.HEIGHT//self.DOWNSCALE, self.WIDTH//self.DOWNSCALE), 
             dtype=np.float32
         )
-        action_history_space = gym.spaces.MultiBinary( (len(self.action_inputs), 5) )
+        input_history_space = gym.spaces.MultiBinary( (3, 3) ) # 3 inputs, 3 frames
 
         self.observation_space = gym.spaces.Dict({
             "image_data": image_data_space,
-            "action_history": action_history_space
+            "input_history": input_history_space
         })
-
 
         self.log_driver = UnformattedLogDriver()
         self.log_driver._logger.setLevel(logging.WARN)
         self.p1_input = JoypadState()
 
+        self.render_mode = render_mode
+
         def input_callback(): 
             while True:
                 yield self.p1_input
-
-        self.last_score, self.last_lives = 0,0 
-
-        # for rendering
-        self.render_mode = render_mode
-        self.pixel_history = np.zeros( (image_data_space.shape[0], image_data_space.shape[1], 3), dtype=np.uint8)
-        self.action_history = np.zeros( (len(self.action_inputs),3), dtype=np.uint8)
 
         # Initialize libretro session with configured drivers
         self.session = ( libretro
@@ -102,6 +93,21 @@ class JoustEnv(gym.Env):
         )
 
         self.session.__enter__()
+
+    def reset(self):
+        """ Reset the state of the environment to an initial state.  """
+        self.session.reset()
+        try: self._load_game(self.START_STATE_FILE)
+        except: pass
+        self.last_score = 0
+        self.last_lives = self.START_LIVES 
+        data_shape = (*self.observation_space['image_data'].shape, 3)
+        self.pixel_history = np.zeros( data_shape, dtype=np.uint8)
+        self.input_history = np.zeros( (3,3), dtype=np.uint8)
+        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)# hold a reference to core's memory 
+        self.session.run()
+        return self._get_observation(None)
+
 
     def _get_observation(self, act):
 
@@ -131,12 +137,16 @@ class JoustEnv(gym.Env):
         self.image_data = self.viz_diff / 255
 
         # assemble inputs into 1-hot vector:
-        one_hot_action = np.array([act==i for i in range(len(self.action_inputs))], dtype=np.uint8)
-        self.action_history = np.roll(self.action_history, 1, axis=1)
-        self.action_history[:,0] = one_hot_action
+        one_hot_input = np.array([ 
+            (self.p1_input.mask & self.FLAP.mask) > 0, 
+            (self.p1_input.mask & self.LEFT.mask) > 0, 
+            (self.p1_input.mask & self.RIGHT.mask) > 0, 
+        ], dtype=np.uint8)
+        self.input_history = np.roll(self.input_history, 1, axis=0)
+        self.input_history[0] = one_hot_input
 
         # assemble observation:
-        obs = {"image_data": self.image_data, "action_history": self.action_history}
+        obs = {"image_data": self.image_data, "input_history": self.input_history}
         return obs
 
 
@@ -176,19 +186,6 @@ class JoustEnv(gym.Env):
         info = {'score': self.last_score, 'lives': self.last_lives}
 
         return obs, rew, done, trunc, info
-
-
-    def reset(self):
-        """ Reset the state of the environment to an initial state.  """
-        self.session.reset()
-        try: self._load_game(self.START_STATE_FILE)
-        except: pass
-        self.session.run()
-        initial_frame = self._get_frame()
-        self.mem = self.session.core.get_memory(RETRO_MEMORY_SYSTEM_RAM)# hold a reference to core's memory 
-        self.last_score = 0  
-        self.last_lives = self.START_LIVES 
-        return initial_frame
 
 
     def _load_game(self, game_file):
@@ -241,10 +238,12 @@ class JoustEnv(gym.Env):
                     f"Lives:{self.last_lives} " 
                     f"Score:{self.last_score} " 
                     f"Coin:{self.mem[self.CREDITS_ADDR]} " 
-                    f"Trunc:{self._get_truncated():01b} "
                     f"Done:{self._get_done():01b} "
+                    f"{self.input_history}" 
                 ), True, (100, 100, 255))
-                self.input_surface = self.font.render(f"{self.p1_input.mask:016b}", True, (100, 100, 255))
+                self.input_surface = self.font.render((
+                    f"{self.p1_input.mask:016b} " 
+                ), True, (100, 100, 255))
                 self.screen.blit(self.stats_surface, (10, 10))
                 self.screen.blit(self.input_surface, (10, self.HEIGHT*SCALE - 17))
                 pg.display.flip()
