@@ -12,3 +12,4 @@ profile.*
 tensorboard/
 poetry.lock
 .env
+*.npz

@@ -392,10 +392,28 @@ def optimize_ppo(trial):
     n_steps = trial.suggest_int("n_steps", 1024, 4096)
     batch_size = trial.suggest_int("batch_size", 32, 256)
     n_epochs = trial.suggest_int("n_epochs", 5, 20)
-    learning_rate = trial.suggest_loguniform("learning_rate", 1e-5, 1e-3)
-    clip_range = trial.suggest_uniform("clip_range", 0.1, 0.3)
-    ent_coef = trial.suggest_loguniform("ent_coef", 1e-8, 1e-1)
-    vf_coef = trial.suggest_uniform("vf_coef", 0.1, 0.9)
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    clip_range = trial.suggest_float("clip_range", 0.1, 0.3)
+    ent_coef = trial.suggest_float("ent_coef", 1e-8, 1e-1, log=True)
+    vf_coef = trial.suggest_float("vf_coef", 0.1, 0.9)
+    gamma = trial.suggest_float("gamma", 0.9, 0.9999)
+    gae_lambda = trial.suggest_float("gae_lambda", 0.9, 1.0)
+    max_grad_norm = trial.suggest_float("max_grad_norm", 0.3, 1.0)
+
+    # Suggest network architecture
+    net_arch_type = trial.suggest_categorical("net_arch", ["small", "medium", "large"])
+    if net_arch_type == "small":
+        net_arch = dict(pi=[64, 64], vf=[64, 64])
+    elif net_arch_type == "medium":
+        net_arch = dict(pi=[128, 128], vf=[128, 128])
+    else:
+        net_arch = dict(pi=[256, 256], vf=[256, 256])
+
+    # Ensure batch_size is a factor of n_steps * num_envs
+    total_steps = n_steps * num_envs
+    batch_size = min(batch_size, total_steps)
+    while total_steps % batch_size != 0:
+        batch_size -= 1
 
     model = sb3.PPO("MultiInputPolicy", env, verbose=0, tensorboard_log="./tensorboard",
                     n_steps=n_steps,
@@ -405,13 +423,11 @@ def optimize_ppo(trial):
                     clip_range=clip_range,
                     ent_coef=ent_coef,
                     vf_coef=vf_coef,
-                    gamma=0.99,
-                    gae_lambda=0.95,
-                    max_grad_norm=0.5,
-                    use_sde=True,
-                    sde_sample_freq=4,
+                    gamma=gamma,
+                    gae_lambda=gae_lambda,
+                    max_grad_norm=max_grad_norm,
                     policy_kwargs=dict(
-                        net_arch=[dict(pi=[64, 64], vf=[64, 64])],
+                        net_arch=net_arch,
                         ortho_init=True
                     ),
                     device='auto')
