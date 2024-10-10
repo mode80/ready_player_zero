@@ -14,6 +14,7 @@ pygame = "^2.6.1"
 scikit-image = "^0.24.0"
 stable-baselines3 = "^2.3.2"
 tensorboard = "^2.18.0"
+optuna = "^4.0.0"
 
 
 [build-system]

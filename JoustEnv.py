@@ -11,6 +11,9 @@ from libretro.drivers import GeneratorInputDriver, UnformattedLogDriver
 from itertools import repeat
 import stable_baselines3 as sb3
 from stable_baselines3.common.vec_env import VecMonitor
+import optuna
+from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.evaluation import evaluate_policy
 
 os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES' # OSX bug :/
 
@@ -375,34 +378,83 @@ def make_env(rank, seed=0):
     set_random_seed(seed)
     return _init
 
-def sb3_ppo():
-    num_envs = 16 
+def optimize_ppo(trial):
+    num_envs = 16
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
-    env = VecMonitor(env)  # Add this line to enable monitoring
-    
-    total_timesteps = 0
-    
-    if os.path.exists("ppo_joust.zip"):
-        model = sb3.PPO.load("ppo_joust", env=env)
-        print("Loaded existing model")
-    else:
-        model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard",
-                        n_steps=2048 // num_envs, device='cpu', 
-                        learning_rate=3e-4,  
-                        batch_size=64,  
-                        n_epochs=10,  
-                        gamma=0.99,  
-                        gae_lambda=0.95)  
-        print("Created new model")
+    env = VecMonitor(env)
 
-    for i in range(500):
-        model.learn(total_timesteps=1_000_000, reset_num_timesteps=False, tb_log_name=f"PPO_run_{i}")
-        total_timesteps += 1_000_000
-        model.save("ppo_joust")
+    # Create an evaluation environment
+    eval_env = JoustEnv(render_mode=None)
+    eval_env = DummyVecEnv([lambda: eval_env])
+    eval_env = VecMonitor(eval_env)
+
+    # Define the hyperparameters to optimize
+    n_steps = trial.suggest_int("n_steps", 1024, 4096)
+    batch_size = trial.suggest_int("batch_size", 32, 256)
+    n_epochs = trial.suggest_int("n_epochs", 5, 20)
+    learning_rate = trial.suggest_loguniform("learning_rate", 1e-5, 1e-3)
+    clip_range = trial.suggest_uniform("clip_range", 0.1, 0.3)
+    ent_coef = trial.suggest_loguniform("ent_coef", 1e-8, 1e-1)
+    vf_coef = trial.suggest_uniform("vf_coef", 0.1, 0.9)
+
+    model = sb3.PPO("MultiInputPolicy", env, verbose=0, tensorboard_log="./tensorboard",
+                    n_steps=n_steps,
+                    batch_size=batch_size,
+                    n_epochs=n_epochs,
+                    learning_rate=learning_rate,
+                    clip_range=clip_range,
+                    ent_coef=ent_coef,
+                    vf_coef=vf_coef,
+                    gamma=0.99,
+                    gae_lambda=0.95,
+                    max_grad_norm=0.5,
+                    use_sde=True,
+                    sde_sample_freq=4,
+                    policy_kwargs=dict(
+                        net_arch=[dict(pi=[64, 64], vf=[64, 64])],
+                        ortho_init=True
+                    ),
+                    device='auto')
+
+    # Create an EvalCallback
+    eval_callback = EvalCallback(eval_env, best_model_save_path="./best_model",
+                                 log_path="./logs", eval_freq=10000,
+                                 deterministic=True, render=False)
+
+    try:
+        model.learn(total_timesteps=500000, callback=eval_callback)
+        mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=10)
+    except Exception as e:
+        print(f"An error occurred during training: {e}")
+        mean_reward = float('-inf')
+
+    return mean_reward
+
+def sb3_ppo_with_optuna():
+    study = optuna.create_study(direction="maximize")
+    study.optimize(optimize_ppo, n_trials=50)  # Adjust n_trials as needed
+
+    print("Best trial:")
+    trial = study.best_trial
+    print(f"Value: {trial.value}")
+    print("Params: ")
+    for key, value in trial.params.items():
+        print(f"    {key}: {value}")
+
+    # Train the final model with the best hyperparameters
+    best_params = study.best_params
+    num_envs = 16
+    env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
+    env = VecMonitor(env)
+
+    model = sb3.PPO("MultiInputPolicy", env, verbose=1, tensorboard_log="./tensorboard", **best_params)
+
+    total_timesteps = 5_000_000  # Adjust as needed
+    model.learn(total_timesteps=total_timesteps, reset_num_timesteps=False, tb_log_name="PPO_final")
+    model.save("ppo_joust_final")
 
     env.close()
 
 
 if __name__ == "__main__":
-    sb3_ppo()
-    
+    sb3_ppo_with_optuna()
